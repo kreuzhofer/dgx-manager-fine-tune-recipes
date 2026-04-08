@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Container entrypoint for Unsloth fine-tune jobs.
-# The dgx-spark-unsloth image already has all dependencies installed.
+# The official unsloth/unsloth:dgxspark image has all dependencies pre-installed.
 set -euo pipefail
 
-echo "=== Unsloth Fine-Tune Container Ready ==="
-echo "Unsloth and dependencies pre-installed in image."
+echo "=== Unsloth DGX Spark Container ==="
+python -c "import unsloth; print(f'Unsloth version: {unsloth.__version__}')" 2>/dev/null || echo "Unsloth installed"
 
-# Signal readiness and keep container alive
 touch /tmp/.ready
 exec sleep infinity

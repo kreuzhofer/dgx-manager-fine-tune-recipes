@@ -11,5 +11,4 @@ echo "Script: ${TRAIN_SCRIPT}"
 echo "Args: $@"
 echo "========================================"
 
-# Unsloth uses its own optimizations, no torchrun needed
-exec uv run python "$TRAIN_SCRIPT" "$@"
+exec python "$TRAIN_SCRIPT" "$@"

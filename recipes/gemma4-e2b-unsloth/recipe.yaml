@@ -7,8 +7,7 @@ method: lora
 dataset_format: sharegpt
 
 container:
-  image: dgx-spark-unsloth:latest
-  build_context: /mnt/tank/src/github/dgx-spark-unsloth
+  image: unsloth/unsloth:dgxspark-2026.1.4-pt2.10.0-cu13.0-trans4.57.1-pytorch-25.11-triton_3.5-embedding-training
   name: dgx-finetune-unsloth
 
 scripts:
