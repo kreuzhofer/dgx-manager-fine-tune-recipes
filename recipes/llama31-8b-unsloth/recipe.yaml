@@ -1,7 +1,7 @@
 recipe_version: "1"
-name: Gemma-4-E2B-Unsloth-QLoRA
-description: QLoRA fine-tune for Gemma 4 E2B via Unsloth (2x faster, 60% less memory)
-base_model: google/gemma-4-e2b
+name: Llama-3.1-8B-Unsloth-QLoRA
+description: QLoRA fine-tune for Llama 3.1 8B via Unsloth (2x faster, 60% less memory)
+base_model: unsloth/Meta-Llama-3.1-8B-Instruct
 framework: unsloth
 method: lora
 dataset_format: sharegpt

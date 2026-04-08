@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 # Container entrypoint for Unsloth fine-tune jobs.
-# The official unsloth/unsloth:dgxspark image has all dependencies pre-installed.
 set -euo pipefail
 
 echo "=== Unsloth DGX Spark Container ==="
