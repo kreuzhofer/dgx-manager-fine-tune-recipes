@@ -126,15 +126,43 @@ def parse_args():
     return p.parse_known_args()[0]
 
 
-def format_sharegpt(example, tokenizer, max_seq_length):
-    """Format conversation data for training. Supports both ShareGPT (from/value) and OpenAI (role/content) formats."""
-    role_map = {"system": "system", "human": "user", "gpt": "assistant"}
+def format_example(example, tokenizer, max_seq_length):
+    """Format a dataset example into tokenized chat for training.
+
+    Supports multiple dataset formats:
+    - ShareGPT: {"conversations": [{"from": "human", "value": "..."}, ...]}
+    - OpenAI:   {"conversations": [{"role": "user", "content": "..."}, ...]}
+    - QA:       {"question": "...", "answer": "..."} with optional "context"
+    - Instruct: {"instruction": "...", "output": "..."} with optional "input"
+    """
     messages = []
-    for t in example["conversations"]:
-        if "from" in t:
-            messages.append({"role": role_map.get(t["from"], t["from"]), "content": t["value"]})
-        else:
-            messages.append({"role": role_map.get(t.get("role", ""), t.get("role", "")), "content": t["content"]})
+
+    if "conversations" in example:
+        role_map = {"system": "system", "human": "user", "gpt": "assistant"}
+        for t in example["conversations"]:
+            if "from" in t:
+                messages.append({"role": role_map.get(t["from"], t["from"]), "content": t["value"]})
+            else:
+                messages.append({"role": role_map.get(t.get("role", ""), t.get("role", "")), "content": t["content"]})
+    elif "question" in example and "answer" in example:
+        user_msg = example["question"]
+        if example.get("context"):
+            user_msg = f"{example['context']}\n\n{example['question']}"
+        messages = [
+            {"role": "user", "content": user_msg},
+            {"role": "assistant", "content": example["answer"]},
+        ]
+    elif "instruction" in example and "output" in example:
+        user_msg = example["instruction"]
+        if example.get("input"):
+            user_msg = f"{example['instruction']}\n\n{example['input']}"
+        messages = [
+            {"role": "user", "content": user_msg},
+            {"role": "assistant", "content": example["output"]},
+        ]
+    else:
+        raise ValueError(f"Unknown dataset format. Columns: {list(example.keys())}")
+
     text = tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=False
     )
@@ -175,7 +203,7 @@ def main():
     print(f"[Rank {world_rank}] Loading model: {args.model_name}")
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
-        torch_dtype=torch.bfloat16,
+        dtype=torch.bfloat16,
         trust_remote_code=True,
     )
     print(f"[Rank {world_rank}] Model loaded.")
@@ -217,9 +245,16 @@ def main():
     )
 
     # ---- Dataset ----
-    raw_dataset = load_dataset("json", data_files=args.dataset, split="train")
+    if args.dataset.endswith(".jsonl") or args.dataset.endswith(".json"):
+        raw_dataset = load_dataset("json", data_files=args.dataset, split="train")
+    else:
+        raw_dataset = load_dataset(args.dataset, split="train")
+
+    if world_rank == 0:
+        print(f"Dataset columns: {raw_dataset.column_names}, {len(raw_dataset)} examples")
+
     tokenized = raw_dataset.map(
-        lambda ex: format_sharegpt(ex, tokenizer, args.max_seq_length),
+        lambda ex: format_example(ex, tokenizer, args.max_seq_length),
         remove_columns=raw_dataset.column_names,
         num_proc=4,
         desc="Tokenizing",

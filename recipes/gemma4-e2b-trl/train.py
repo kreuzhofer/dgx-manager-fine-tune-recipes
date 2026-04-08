@@ -92,15 +92,28 @@ def parse_args():
     return p.parse_known_args()[0]
 
 
-def format_conversations(example, tokenizer, max_seq_length):
-    """Format conversation data. Supports ShareGPT (from/value) and OpenAI (role/content)."""
+def format_example(example, tokenizer, max_seq_length):
+    """Format a dataset example into tokenized chat. Supports conversations, QA, and instruct formats."""
     messages = []
-    for t in example["conversations"]:
-        if "from" in t:
-            role_map = {"system": "system", "human": "user", "gpt": "assistant"}
-            messages.append({"role": role_map.get(t["from"], t["from"]), "content": t["value"]})
-        else:
-            messages.append({"role": t.get("role", ""), "content": t["content"]})
+    if "conversations" in example:
+        role_map = {"system": "system", "human": "user", "gpt": "assistant"}
+        for t in example["conversations"]:
+            if "from" in t:
+                messages.append({"role": role_map.get(t["from"], t["from"]), "content": t["value"]})
+            else:
+                messages.append({"role": t.get("role", ""), "content": t["content"]})
+    elif "question" in example and "answer" in example:
+        user_msg = example["question"]
+        if example.get("context"):
+            user_msg = f"{example['context']}\n\n{example['question']}"
+        messages = [{"role": "user", "content": user_msg}, {"role": "assistant", "content": example["answer"]}]
+    elif "instruction" in example and "output" in example:
+        user_msg = example["instruction"]
+        if example.get("input"):
+            user_msg = f"{example['instruction']}\n\n{example['input']}"
+        messages = [{"role": "user", "content": user_msg}, {"role": "assistant", "content": example["output"]}]
+    else:
+        raise ValueError(f"Unknown dataset format. Columns: {list(example.keys())}")
     text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
     tokens = tokenizer(text, truncation=True, max_length=max_seq_length, return_tensors=None)
     tokens["labels"] = tokens["input_ids"].copy()
@@ -125,7 +138,7 @@ def main():
 
     print(f"Loading model: {args.model_name}")
     model = AutoModelForCausalLM.from_pretrained(
-        args.model_name, torch_dtype=torch.bfloat16, trust_remote_code=True,
+        args.model_name, dtype=torch.bfloat16, trust_remote_code=True,
     )
 
     gc.collect()
@@ -154,9 +167,15 @@ def main():
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
 
     # Dataset
-    raw = load_dataset("json", data_files=args.dataset, split="train")
+    if args.dataset.endswith(".jsonl") or args.dataset.endswith(".json"):
+        raw = load_dataset("json", data_files=args.dataset, split="train")
+    else:
+        raw = load_dataset(args.dataset, split="train")
+
+    print(f"Dataset columns: {raw.column_names}, {len(raw)} examples")
+
     tokenized = raw.map(
-        lambda ex: format_conversations(ex, tokenizer, args.max_seq_length),
+        lambda ex: format_example(ex, tokenizer, args.max_seq_length),
         remove_columns=raw.column_names, num_proc=4, desc="Tokenizing",
     )
 
