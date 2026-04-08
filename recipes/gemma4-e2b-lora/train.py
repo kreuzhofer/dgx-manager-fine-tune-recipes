@@ -12,6 +12,47 @@ import gc
 import os
 
 import torch
+
+# ---------------------------------------------------------------------------
+# Monkey-patch pynvml for DGX Spark GB10 which doesn't support some NVML calls.
+# DeepSpeed calls nvmlDeviceGetMemoryInfo during optimizer init which fails
+# on the unified memory architecture. Patch to return total system RAM instead.
+# ---------------------------------------------------------------------------
+try:
+    import pynvml
+    _orig_nvmlDeviceGetMemoryInfo = pynvml.nvmlDeviceGetMemoryInfo
+
+    class _FakeMemInfo:
+        def __init__(self):
+            import shutil
+            total, used, free = shutil.disk_usage("/")
+            # Use system RAM as proxy
+            try:
+                with open("/proc/meminfo") as f:
+                    for line in f:
+                        if line.startswith("MemTotal:"):
+                            self.total = int(line.split()[1]) * 1024
+                        elif line.startswith("MemAvailable:"):
+                            self.free = int(line.split()[1]) * 1024
+                self.used = self.total - self.free
+            except Exception:
+                self.total = 128 * 1024**3
+                self.free = 64 * 1024**3
+                self.used = self.total - self.free
+
+    def _patched_nvmlDeviceGetMemoryInfo(handle, version=None):
+        try:
+            if version:
+                return _orig_nvmlDeviceGetMemoryInfo(handle, version)
+            return _orig_nvmlDeviceGetMemoryInfo(handle)
+        except pynvml.NVMLError:
+            return _FakeMemInfo()
+
+    pynvml.nvmlDeviceGetMemoryInfo = _patched_nvmlDeviceGetMemoryInfo
+except ImportError:
+    pass
+# ---------------------------------------------------------------------------
+
 from datasets import load_dataset
 from peft import LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -86,12 +127,14 @@ def parse_args():
 
 
 def format_sharegpt(example, tokenizer, max_seq_length):
-    """Format ShareGPT-style conversations for training."""
+    """Format conversation data for training. Supports both ShareGPT (from/value) and OpenAI (role/content) formats."""
     role_map = {"system": "system", "human": "user", "gpt": "assistant"}
-    messages = [
-        {"role": role_map.get(t["from"], t["from"]), "content": t["value"]}
-        for t in example["conversations"]
-    ]
+    messages = []
+    for t in example["conversations"]:
+        if "from" in t:
+            messages.append({"role": role_map.get(t["from"], t["from"]), "content": t["value"]})
+        else:
+            messages.append({"role": role_map.get(t.get("role", ""), t.get("role", "")), "content": t["content"]})
     text = tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=False
     )
@@ -117,6 +160,16 @@ def main():
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    # Set a default chat template if not present (e.g., Gemma 4)
+    if not getattr(tokenizer, 'chat_template', None):
+        tokenizer.chat_template = (
+            "{% for message in messages %}"
+            "{% if message['role'] == 'user' %}<start_of_turn>user\n{{ message['content'] }}<end_of_turn>\n"
+            "{% elif message['role'] == 'assistant' %}<start_of_turn>model\n{{ message['content'] }}<end_of_turn>\n"
+            "{% elif message['role'] == 'system' %}<start_of_turn>system\n{{ message['content'] }}<end_of_turn>\n"
+            "{% endif %}{% endfor %}"
+            "{% if add_generation_prompt %}<start_of_turn>model\n{% endif %}"
+        )
 
     # ---- Model ----
     print(f"[Rank {world_rank}] Loading model: {args.model_name}")
@@ -129,6 +182,21 @@ def main():
 
     gc.collect()
     flush_page_cache()
+
+    # ---- Replace custom linear layers with standard nn.Linear for LoRA compatibility ----
+    # Gemma 4 uses Gemma4ClippableLinear wrappers that PEFT doesn't support.
+    # Unwrap them to standard nn.Linear before applying LoRA.
+    import torch.nn as nn
+    replaced = 0
+    for name, module in model.named_modules():
+        if hasattr(module, 'linear') and isinstance(module.linear, nn.Linear) and type(module).__name__ != 'Linear':
+            parent_name = name.rsplit('.', 1)
+            if len(parent_name) == 2:
+                parent = dict(model.named_modules())[parent_name[0]]
+                setattr(parent, parent_name[1], module.linear)
+                replaced += 1
+    if replaced > 0 and world_rank == 0:
+        print(f"Replaced {replaced} custom linear wrappers with nn.Linear for LoRA")
 
     # ---- LoRA ----
     target_modules = [m.strip() for m in args.lora_target_modules.split(",")]
@@ -193,6 +261,7 @@ def main():
         report_to="none",
         dataset_text_field=None,
         deepspeed=args.ds_config,
+        skip_memory_metrics=True,
     )
 
     trainer = SFTTrainer(

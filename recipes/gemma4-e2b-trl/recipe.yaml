@@ -1,8 +1,8 @@
 recipe_version: "1"
-name: Gemma-4-E2B-LoRA
-description: LoRA fine-tune for Google Gemma 4 E2B on DGX Spark
+name: Gemma-4-E2B-TRL
+description: LoRA fine-tune for Gemma 4 E2B using plain TRL (no DeepSpeed)
 base_model: google/gemma-4-e2b
-framework: deepspeed
+framework: trl
 method: lora
 dataset_format: sharegpt
 
@@ -14,11 +14,10 @@ scripts:
   entrypoint: entrypoint.sh
   train: train.py
   launch: launch.sh
-  ds_config: ds_config.json
 
 defaults:
   learning_rate: 0.0002
-  batch_size: 2
+  batch_size: 1
   gradient_accumulation_steps: 4
   max_seq_length: 2048
   num_train_epochs: 1
