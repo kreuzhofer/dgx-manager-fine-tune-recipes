@@ -3,7 +3,7 @@
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
-from lib.patches import apply_all, unwrap_custom_linear
+from lib.patches import apply_all
 from lib.dataset import prepare_datasets
 from lib.logging import setup_logging, LogMetricsCallback
 from lib.tokenizer import setup_tokenizer
@@ -30,7 +30,6 @@ def main():
         args.model_name, dtype=torch.bfloat16, trust_remote_code=True)
     gc.collect()
 
-    unwrap_custom_linear(model)
 
     target_modules = [m.strip() for m in args.lora_target_modules.split(",")]
     model = get_peft_model(model, LoraConfig(

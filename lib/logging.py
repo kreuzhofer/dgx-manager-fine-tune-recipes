@@ -40,6 +40,9 @@ class Tee:
                 continue
         raise OSError("No valid file descriptor")
 
+    def isatty(self):
+        return False
+
 
 def setup_logging(output_dir, filename="train.log"):
     """Install a Tee on stdout/stderr that also writes to a log file.

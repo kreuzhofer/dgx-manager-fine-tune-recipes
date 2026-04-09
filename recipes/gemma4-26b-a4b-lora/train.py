@@ -3,7 +3,7 @@
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
-from lib.patches import apply_all, unwrap_custom_linear, flush_page_cache, fix_gemma4_use_cache
+from lib.patches import apply_all, flush_page_cache, fix_gemma4_use_cache
 from lib.dataset import prepare_datasets
 from lib.logging import setup_logging, LogMetricsCallback
 from lib.tokenizer import setup_tokenizer
@@ -39,7 +39,6 @@ def main():
     gc.collect()
     flush_page_cache()
 
-    unwrap_custom_linear(model)
 
     target_modules = [m.strip() for m in args.lora_target_modules.split(",")]
     model = get_peft_model(model, LoraConfig(

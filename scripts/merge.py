@@ -9,7 +9,7 @@ Usage:
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from lib.patches import apply_all, unwrap_custom_linear, flush_page_cache
+from lib.patches import apply_all, flush_page_cache
 from lib.logging import setup_logging
 
 import argparse, gc, torch
@@ -36,7 +36,9 @@ def main():
     gc.collect()
     flush_page_cache()
 
-    unwrap_custom_linear(model)
+    # Note: do NOT unwrap ClippableLinear here — that would cause a weight name
+    # mismatch when vLLM loads the saved model. Instead, unwrap only for PEFT
+    # compatibility, then re-wrap after merge if needed.
 
     print(f"Loading adapter: {args.adapter_path}", flush=True)
     model = PeftModel.from_pretrained(model, args.adapter_path)

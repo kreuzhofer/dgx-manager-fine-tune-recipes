@@ -1,9 +1,8 @@
-"""DGX Spark hardware workarounds.
+"""DGX Spark hardware workarounds and model compatibility patches.
 
-Patches for NVIDIA GB10 unified memory architecture:
-- pynvml: nvmlDeviceGetMemoryInfo not supported, return system RAM instead
+- pynvml: nvmlDeviceGetMemoryInfo not supported on GB10, return system RAM
 - safetensors: flush NFS page cache after each shard load
-- Gemma 4: unwrap ClippableLinear wrappers for PEFT compatibility
+- PEFT: teach LoRA to handle Gemma4ClippableLinear without unwrapping
 """
 
 import os
@@ -64,6 +63,35 @@ def patch_safetensors_cache():
         pass
 
 
+def patch_peft_for_clippable_linear():
+    """Teach PEFT's LoRA to handle Gemma4ClippableLinear by targeting its inner nn.Linear.
+
+    Instead of modifying the model architecture (which breaks weight key names for serving),
+    we patch PEFT's dispatch to recognize ClippableLinear and wrap its inner .linear layer.
+    The model architecture and weight names stay unchanged.
+    """
+    try:
+        import torch.nn as nn
+        from peft.tuners.lora import model as lora_model
+        from peft.tuners.lora.layer import Linear as LoraLinear
+
+        _orig_dispatch = lora_model.dispatch_default
+
+        def _patched_dispatch(target, adapter_name, lora_config, **kwargs):
+            # If the target has a .linear attribute that is nn.Linear,
+            # it's a wrapper like Gemma4ClippableLinear — target the inner linear
+            if (hasattr(target, 'linear') and isinstance(target.linear, nn.Linear)
+                    and not isinstance(target, nn.Linear)):
+                kwargs.update(lora_config.loftq_config)
+                return LoraLinear(target.linear, adapter_name, **kwargs)
+            return _orig_dispatch(target, adapter_name, lora_config, **kwargs)
+
+        lora_model.dispatch_default = _patched_dispatch
+        print("Patched PEFT dispatch for Gemma4ClippableLinear support", flush=True)
+    except ImportError:
+        pass
+
+
 def flush_page_cache():
     """Drop system page cache via /proc. Requires root and writable /proc."""
     try:
@@ -73,25 +101,6 @@ def flush_page_cache():
         return True
     except (PermissionError, OSError):
         return False
-
-
-def unwrap_custom_linear(model):
-    """Replace Gemma4ClippableLinear wrappers with standard nn.Linear for PEFT compatibility.
-
-    Returns the number of modules replaced.
-    """
-    import torch.nn as nn
-    replaced = 0
-    for name, module in model.named_modules():
-        if hasattr(module, 'linear') and isinstance(module.linear, nn.Linear) and type(module).__name__ != 'Linear':
-            parts = name.rsplit('.', 1)
-            if len(parts) == 2:
-                parent = dict(model.named_modules())[parts[0]]
-                setattr(parent, parts[1], module.linear)
-                replaced += 1
-    if replaced:
-        print(f"Replaced {replaced} custom linear wrappers with nn.Linear for LoRA", flush=True)
-    return replaced
 
 
 def fix_gemma4_use_cache(model):
@@ -105,6 +114,7 @@ def fix_gemma4_use_cache(model):
 
 
 def apply_all():
-    """Apply all DGX Spark patches. Call at the top of train.py before any imports."""
+    """Apply all DGX Spark patches. Call at the top of train.py before any model imports."""
     patch_pynvml()
     patch_safetensors_cache()
+    patch_peft_for_clippable_linear()
