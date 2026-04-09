@@ -57,7 +57,7 @@ except ImportError:
 
 from datasets import load_dataset
 from peft import LoraConfig, get_peft_model
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, TrainerCallback
 from trl import SFTTrainer, SFTConfig
 
 
@@ -93,6 +93,23 @@ try:
 except ImportError:
     pass
 # ---------------------------------------------------------------------------
+
+
+class LogMetricsCallback(TrainerCallback):
+    """Force-print training metrics to stdout for progress tracking.
+    Tqdm overwrites loss output in piped mode, so we print explicitly."""
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        if logs and "loss" in logs:
+            step = state.global_step
+            total = state.max_steps if state.max_steps > 0 else "?"
+            loss = logs.get("loss", "?")
+            lr = logs.get("learning_rate", "?")
+            print(f"[TRAIN] step={step}/{total} loss={loss} lr={lr}", flush=True)
+        if logs and "eval_loss" in logs:
+            print(f"[EVAL] eval_loss={logs['eval_loss']}", flush=True)
+
+    def on_evaluate(self, args, state, control, **kwargs):
+        print("[EVAL] Running evaluation...", flush=True)
 
 
 def flush_page_cache():
@@ -316,6 +333,7 @@ def main():
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         args=training_args,
+        callbacks=[LogMetricsCallback()],
     )
 
     if world_rank == 0:
