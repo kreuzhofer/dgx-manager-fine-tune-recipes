@@ -85,6 +85,19 @@ def main():
     )
     print("Base model loaded.", flush=True)
 
+    # Replace custom linear layers (Gemma 4 ClippableLinear → nn.Linear)
+    import torch.nn as nn
+    replaced = 0
+    for name, module in model.named_modules():
+        if hasattr(module, 'linear') and isinstance(module.linear, nn.Linear) and type(module).__name__ != 'Linear':
+            parts = name.rsplit('.', 1)
+            if len(parts) == 2:
+                parent = dict(model.named_modules())[parts[0]]
+                setattr(parent, parts[1], module.linear)
+                replaced += 1
+    if replaced:
+        print(f"Replaced {replaced} custom linear wrappers with nn.Linear", flush=True)
+
     # Flush page cache after model load
     gc.collect()
     try:
