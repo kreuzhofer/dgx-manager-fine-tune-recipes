@@ -7,10 +7,21 @@ TRAIN_SCRIPT="${SCRIPT_DIR}/train.py"
 DS_CONFIG="${SCRIPT_DIR}/ds_config.json"
 
 # Find an available master port (avoid conflicts with other training jobs)
-MASTER_PORT=9901
-while ss -tlnp 2>/dev/null | grep -q ":${MASTER_PORT} " || lsof -i :${MASTER_PORT} >/dev/null 2>&1; do
-    MASTER_PORT=$((MASTER_PORT + 1))
-done
+MASTER_PORT=$(python3 -c "
+import socket
+port = 9901
+while port < 10000:
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(('127.0.0.1', port))
+        s.close()
+        print(port)
+        break
+    except OSError:
+        port += 1
+else:
+    print(9901)
+")
 
 # Flush page cache
 sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
