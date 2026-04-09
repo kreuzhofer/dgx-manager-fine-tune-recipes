@@ -65,13 +65,13 @@ def patch_safetensors_cache():
 
 
 def flush_page_cache():
-    """Drop system page cache via /proc. Requires root."""
+    """Drop system page cache via /proc. Requires root and writable /proc."""
     try:
         os.sync()
         with open("/proc/sys/vm/drop_caches", "w") as f:
             f.write("3\n")
         return True
-    except PermissionError:
+    except (PermissionError, OSError):
         return False
 
 
