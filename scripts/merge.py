@@ -53,6 +53,23 @@ def main():
     print("Saving tokenizer...", flush=True)
     tokenizer = AutoTokenizer.from_pretrained(args.adapter_path, trust_remote_code=True)
     tokenizer.save_pretrained(args.output_dir)
+
+    # Copy additional config files from base model that vLLM needs
+    # (preprocessor_config.json, etc. for multimodal models)
+    print("Copying config files from base model...", flush=True)
+    try:
+        from huggingface_hub import snapshot_download
+        import shutil
+        base_path = snapshot_download(args.base_model, allow_patterns=["*.json", "*.jinja"])
+        for fname in os.listdir(base_path):
+            if fname.endswith(".json") or fname.endswith(".jinja"):
+                dst = os.path.join(args.output_dir, fname)
+                if not os.path.exists(dst):
+                    shutil.copy2(os.path.join(base_path, fname), dst)
+                    print(f"  Copied {fname}", flush=True)
+    except Exception as e:
+        print(f"  Warning: could not copy base model configs: {e}", flush=True)
+
     print(f"Merged model saved to {args.output_dir}", flush=True)
 
 
