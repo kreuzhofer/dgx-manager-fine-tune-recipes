@@ -106,11 +106,12 @@ def fix_clippable_linear_keys(output_dir, base_model):
         import safetensors.torch
         from huggingface_hub import snapshot_download
 
-        # Get original model's key names
+        # Load original model's tensors
         base_path = snapshot_download(base_model, allow_patterns=["*.safetensors"])
-        orig_keys = set()
+        orig_tensors = {}
         for f in glob.glob(os.path.join(base_path, "*.safetensors")):
-            orig_keys.update(safetensors.torch.load_file(f, device="cpu").keys())
+            orig_tensors.update(safetensors.torch.load_file(f, device="cpu"))
+        orig_keys = set(orig_tensors.keys())
 
         # Load our saved model
         saved_files = glob.glob(os.path.join(output_dir, "*.safetensors"))
@@ -123,7 +124,7 @@ def fix_clippable_linear_keys(output_dir, base_model):
             fixed = 0
 
             for key, tensor in tensors.items():
-                # Check if this key needs .linear. inserted
+                # Check if this key needs .linear. inserted (ClippableLinear)
                 linear_key = key.replace(".weight", ".linear.weight").replace(".bias", ".linear.bias")
                 if key not in orig_keys and linear_key in orig_keys:
                     remapped[linear_key] = tensor
@@ -131,17 +132,17 @@ def fix_clippable_linear_keys(output_dir, base_model):
                 else:
                     remapped[key] = tensor
 
-            # Add missing clipping buffers (all inf defaults)
+            # Copy ALL missing keys from original model
+            # (clipping buffers, k_eq_v shared weights, k_norm, etc.)
+            copied = 0
             for orig_key in orig_keys:
                 if orig_key not in remapped:
-                    if any(orig_key.endswith(s) for s in [".input_min", ".output_min"]):
-                        remapped[orig_key] = torch.tensor(-float("inf"))
-                    elif any(orig_key.endswith(s) for s in [".input_max", ".output_max"]):
-                        remapped[orig_key] = torch.tensor(float("inf"))
+                    remapped[orig_key] = orig_tensors[orig_key]
+                    copied += 1
 
-            if fixed > 0:
+            if fixed > 0 or copied > 0:
                 safetensors.torch.save_file(remapped, sf)
-                print(f"Fixed {fixed} weight keys in {os.path.basename(sf)}", flush=True)
+                print(f"Fixed {fixed} weight keys, copied {copied} missing keys in {os.path.basename(sf)}", flush=True)
 
     except Exception as e:
         print(f"Warning: could not fix weight keys: {e}", flush=True)
