@@ -92,6 +92,61 @@ def patch_peft_for_clippable_linear():
         pass
 
 
+def fix_clippable_linear_keys(output_dir, base_model):
+    """Fix weight key names after save_pretrained for Gemma 4 models.
+
+    save_pretrained() flattens ClippableLinear weight keys from
+    'module.linear.weight' to 'module.weight'. vLLM expects the nested format.
+    This function compares saved keys against the original model's keys and
+    remaps any mismatches, also restoring missing clipping buffers.
+    """
+    import glob
+    try:
+        import torch
+        import safetensors.torch
+        from huggingface_hub import snapshot_download
+
+        # Get original model's key names
+        base_path = snapshot_download(base_model, allow_patterns=["*.safetensors"])
+        orig_keys = set()
+        for f in glob.glob(os.path.join(base_path, "*.safetensors")):
+            orig_keys.update(safetensors.torch.load_file(f, device="cpu").keys())
+
+        # Load our saved model
+        saved_files = glob.glob(os.path.join(output_dir, "*.safetensors"))
+        if not saved_files:
+            return
+
+        for sf in saved_files:
+            tensors = safetensors.torch.load_file(sf, device="cpu")
+            remapped = {}
+            fixed = 0
+
+            for key, tensor in tensors.items():
+                # Check if this key needs .linear. inserted
+                linear_key = key.replace(".weight", ".linear.weight").replace(".bias", ".linear.bias")
+                if key not in orig_keys and linear_key in orig_keys:
+                    remapped[linear_key] = tensor
+                    fixed += 1
+                else:
+                    remapped[key] = tensor
+
+            # Add missing clipping buffers (all inf defaults)
+            for orig_key in orig_keys:
+                if orig_key not in remapped:
+                    if any(orig_key.endswith(s) for s in [".input_min", ".output_min"]):
+                        remapped[orig_key] = torch.tensor(-float("inf"))
+                    elif any(orig_key.endswith(s) for s in [".input_max", ".output_max"]):
+                        remapped[orig_key] = torch.tensor(float("inf"))
+
+            if fixed > 0:
+                safetensors.torch.save_file(remapped, sf)
+                print(f"Fixed {fixed} weight keys in {os.path.basename(sf)}", flush=True)
+
+    except Exception as e:
+        print(f"Warning: could not fix weight keys: {e}", flush=True)
+
+
 def flush_page_cache():
     """Drop system page cache via /proc. Requires root and writable /proc."""
     try:

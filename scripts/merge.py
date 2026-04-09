@@ -9,7 +9,7 @@ Usage:
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from lib.patches import apply_all, flush_page_cache
+from lib.patches import apply_all, flush_page_cache, fix_clippable_linear_keys
 from lib.logging import setup_logging
 
 import argparse, gc, torch
@@ -51,6 +51,10 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     print(f"Saving merged model to: {args.output_dir}", flush=True)
     model.save_pretrained(args.output_dir, safe_serialization=True)
+
+    # Fix ClippableLinear weight key names for vLLM compatibility
+    print("Fixing weight keys for ClippableLinear modules...", flush=True)
+    fix_clippable_linear_keys(args.output_dir, args.base_model)
 
     print("Saving tokenizer...", flush=True)
     tokenizer = AutoTokenizer.from_pretrained(args.adapter_path, trust_remote_code=True)
