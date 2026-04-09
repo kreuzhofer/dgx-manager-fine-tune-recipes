@@ -36,5 +36,5 @@ hardware:
 
 deploy:
   container: vllm-node-tf5
-  gpu_memory_utilization: 0.85
+  gpu_memory_utilization: 0.3
   max_model_len: 4096
