@@ -1,7 +1,7 @@
 recipe_version: "1"
 name: Gemma-4-26B-A4B-LoRA
 description: LoRA fine-tune for Google Gemma 4 26B-A4B (MoE, 26B total / ~4B effective) on DGX Spark
-base_model: google/gemma-4-26B-A4B
+base_model: google/gemma-4-26B-A4B-it
 framework: deepspeed
 method: lora
 dataset_format: sharegpt
