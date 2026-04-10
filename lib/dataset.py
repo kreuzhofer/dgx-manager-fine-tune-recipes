@@ -7,7 +7,43 @@ Supports multiple dataset formats:
 - Instruct: {"instruction": "...", "output": "..."} with optional "input"
 """
 
+import torch
 from datasets import load_dataset
+from transformers import DataCollatorForLanguageModeling
+
+
+class Gemma4DataCollator(DataCollatorForLanguageModeling):
+    """Data collator that passes through mm_token_type_ids and token_type_ids.
+
+    The default collator drops these fields which Gemma 4 requires during training.
+    """
+
+    def __call__(self, features, return_tensors=None):
+        # Extract extra fields before the parent collator drops them
+        mm_token_type_ids = [f.pop("mm_token_type_ids", None) for f in features]
+        token_type_ids = [f.pop("token_type_ids", None) for f in features]
+
+        # Standard collation for input_ids, attention_mask, labels
+        batch = super().__call__(features, return_tensors=return_tensors)
+
+        # Add back the extra fields (pad to match batch length)
+        if any(t is not None for t in mm_token_type_ids):
+            max_len = batch["input_ids"].shape[1]
+            batch["mm_token_type_ids"] = torch.zeros_like(batch["input_ids"])
+            for i, ids in enumerate(mm_token_type_ids):
+                if ids is not None:
+                    length = min(len(ids), max_len)
+                    batch["mm_token_type_ids"][i, :length] = torch.tensor(ids[:length])
+
+        if any(t is not None for t in token_type_ids):
+            max_len = batch["input_ids"].shape[1]
+            batch["token_type_ids"] = torch.zeros_like(batch["input_ids"])
+            for i, ids in enumerate(token_type_ids):
+                if ids is not None:
+                    length = min(len(ids), max_len)
+                    batch["token_type_ids"][i, :length] = torch.tensor(ids[:length])
+
+        return batch
 
 
 def load_training_dataset(path_or_id, split="train"):

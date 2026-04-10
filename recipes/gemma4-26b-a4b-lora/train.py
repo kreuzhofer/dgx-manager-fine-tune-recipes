@@ -4,7 +4,7 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 from lib.patches import apply_all, flush_page_cache, fix_gemma4_use_cache
-from lib.dataset import prepare_datasets
+from lib.dataset import prepare_datasets, Gemma4DataCollator
 from lib.logging import setup_logging, LogMetricsCallback
 from lib.tokenizer import setup_tokenizer
 from lib.args import add_common_args, add_deepspeed_args
@@ -55,6 +55,7 @@ def main():
 
     trainer = SFTTrainer(
         model=model, processing_class=tokenizer,
+        data_collator=Gemma4DataCollator(tokenizer=tokenizer, mlm=False),
         train_dataset=train_ds, eval_dataset=eval_ds,
         callbacks=[LogMetricsCallback()],
         args=SFTConfig(
