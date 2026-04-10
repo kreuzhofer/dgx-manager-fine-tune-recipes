@@ -32,13 +32,18 @@ def main():
 
     tokenizer = setup_tokenizer(args.model_name)
 
+    # Tokenize dataset BEFORE loading model to avoid fork OOM
+    # (num_proc=4 in map() forks child processes — if model is already
+    # loaded, each fork inherits 50GB+ virtual memory, exceeding 119GB)
+    train_ds, eval_ds = prepare_datasets(
+        args.dataset, tokenizer, args.max_seq_length, args.eval_fraction, args.seed, world_rank)
+
     print(f"[Rank {world_rank}] Loading model: {args.model_name}", flush=True)
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name, dtype=torch.bfloat16, trust_remote_code=True)
     print(f"[Rank {world_rank}] Model loaded.", flush=True)
     gc.collect()
     flush_page_cache()
-
 
     target_modules = [m.strip() for m in args.lora_target_modules.split(",")]
     model = get_peft_model(model, LoraConfig(
@@ -49,9 +54,6 @@ def main():
 
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     fix_gemma4_use_cache(model)
-
-    train_ds, eval_ds = prepare_datasets(
-        args.dataset, tokenizer, args.max_seq_length, args.eval_fraction, args.seed, world_rank)
 
     trainer = SFTTrainer(
         model=model, processing_class=tokenizer,
@@ -72,6 +74,12 @@ def main():
     if world_rank == 0:
         print(f"Starting training: {len(train_ds)} examples, "
               f"max_seq_length={args.max_seq_length}, batch_size={args.batch_size}", flush=True)
+
+    # Critical: flush NFS page cache before first training step
+    # ZeRO-3 all-gather + stale page cache can exceed DGX Spark's
+    # unified memory (GPU+CPU share 128GB)
+    gc.collect()
+    flush_page_cache()
 
     trainer.train()
 
