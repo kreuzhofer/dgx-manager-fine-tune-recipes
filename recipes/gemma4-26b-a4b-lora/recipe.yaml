@@ -31,7 +31,7 @@ defaults:
   eval_fraction: 0.1
 
 hardware:
-  min_nodes: 1
+  min_nodes: 2
   gpus_per_node: 1
   vram_estimate_mb: 49152
 
