@@ -66,7 +66,8 @@ def main():
             warmup_steps=5, logging_steps=1, save_strategy="epoch",
             eval_strategy="epoch" if eval_ds else "no",
             seed=args.seed, max_length=args.max_seq_length, packing=False,
-            report_to="none", deepspeed=args.ds_config, skip_memory_metrics=True))
+            report_to="none", deepspeed=args.ds_config, skip_memory_metrics=True,
+            remove_unused_columns=False))
 
     if world_rank == 0:
         print(f"Starting training: {len(train_ds)} examples, "
