@@ -54,6 +54,11 @@ def format_example(example, tokenizer, max_seq_length):
         text, truncation=True, max_length=max_seq_length, return_tensors=None
     )
     tokens["labels"] = tokens["input_ids"].copy()
+    # Gemma 4 multimodal models require mm_token_type_ids and token_type_ids
+    # even for text-only training (all zeros for text)
+    seq_len = len(tokens["input_ids"])
+    tokens["token_type_ids"] = [0] * seq_len
+    tokens["mm_token_type_ids"] = [0] * seq_len
     return tokens
 
 
