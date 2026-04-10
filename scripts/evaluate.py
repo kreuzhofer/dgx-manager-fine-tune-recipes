@@ -31,13 +31,13 @@ import matplotlib.pyplot as plt
 
 
 def generate_sql(model, tokenizer, schema, question, max_new_tokens=256):
-    """Ask the model to generate SQL for a given schema + question."""
+    """Ask the model to generate SQL for a given schema + question.
+
+    Uses the same format as lib/dataset.py format_example() for QA datasets
+    so the prompt matches what the model was trained on.
+    """
     messages = [
-        {
-            "role": "system",
-            "content": "You are a SQL expert. Given a database schema and a question, write the correct SQL query. Output only the SQL query, nothing else.",
-        },
-        {"role": "user", "content": f"Schema:\n{schema}\n\nQuestion: {question}"},
+        {"role": "user", "content": f"{schema}\n\n{question}"},
     ]
 
     text = tokenizer.apply_chat_template(
@@ -61,7 +61,14 @@ def generate_sql(model, tokenizer, schema, question, max_new_tokens=256):
 
 def normalize_sql(sql):
     """Normalize SQL for comparison."""
-    return " ".join(sql.lower().strip().rstrip(";").split())
+    s = sql.strip()
+    # Remove chat template artifacts
+    for tag in ["<end_of_turn>", "<start_of_turn>", "model", "user"]:
+        s = s.split(tag)[0]
+    s = s.strip().rstrip(";")
+    # Normalize quotes (single → double)
+    s = s.replace("'", '"')
+    return " ".join(s.lower().split())
 
 
 def evaluate_model(model_path, test_data, ground_truth, label):
