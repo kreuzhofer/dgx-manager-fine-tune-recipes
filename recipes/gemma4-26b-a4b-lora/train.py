@@ -75,8 +75,9 @@ def main():
 
     trainer.train()
 
+    # All ranks must call save_model with ZeRO-3 (parameters are distributed)
+    trainer.save_model(f"{args.output_dir}/lora_adapter")
     if world_rank == 0:
-        trainer.save_model(f"{args.output_dir}/lora_adapter")
         tokenizer.save_pretrained(f"{args.output_dir}/lora_adapter")
         print(f"LoRA adapter saved to {args.output_dir}/lora_adapter", flush=True)
 
