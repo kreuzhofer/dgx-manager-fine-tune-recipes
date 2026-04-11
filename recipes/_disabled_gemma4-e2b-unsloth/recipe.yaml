@@ -1,0 +1,62 @@
+recipe_version: "1"
+name: Gemma-4-E2B-Unsloth-QLoRA
+description: "[DISABLED] QLoRA fine-tune for Gemma 4 E2B via Unsloth — blocked by FlashAttention head_dim limit"
+
+# STATUS: DISABLED — does not work as of April 2026
+#
+# Root cause: Gemma 4 uses hybrid attention with some layers having head_dim=512.
+# FlashAttention 2 only supports head_dim <= 256. Unsloth uses FA2 internally.
+# Error: "FlashAttention forward only supports head dimension at most 256"
+#
+# Attempted fixes:
+# - Upgrading unsloth + transformers in container entrypoint: transformers 5.x
+#   is incompatible with unsloth 2026.1.4 (NameError: 'auto_docstring')
+# - Using official dgxspark image with upgraded packages: same FA2 limit
+#
+# Tracking:
+# - HuggingFace transformers issue #45201: per-layer dispatch proposed
+#   (layers with head_dim=512 fall back to SDPA instead of FA2)
+# - No Unsloth fix available yet
+# - Unsloth v0.1.35/v0.1.36-beta have Gemma 4 fixes but not for FA2 head_dim
+#
+# To retry: check if newer Unsloth or FlashAttention versions support head_dim>256,
+# or if transformers adds per-layer attention dispatch for Gemma 4.
+# The Llama 3.1 Unsloth recipe (llama31-8b-unsloth) works fine.
+base_model: google/gemma-4-e2b
+framework: unsloth
+method: lora
+dataset_format: sharegpt
+
+container:
+  image: unsloth/unsloth:dgxspark-2026.1.4-pt2.10.0-cu13.0-trans4.57.1-pytorch-25.11-triton_3.5-embedding-training
+  name: dgx-finetune-unsloth
+
+scripts:
+  entrypoint: entrypoint.sh
+  train: train.py
+  launch: launch.sh
+
+defaults:
+  learning_rate: 0.0002
+  batch_size: 2
+  gradient_accumulation_steps: 4
+  max_seq_length: 2048
+  num_train_epochs: 1
+  max_steps: -1
+  lora_r: 16
+  lora_alpha: 16
+  lora_dropout: 0.0
+  lora_target_modules: q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj
+  load_in_4bit: true
+  seed: 42
+  eval_fraction: 0.1
+
+hardware:
+  min_nodes: 1
+  gpus_per_node: 1
+  vram_estimate_mb: 12288
+
+deploy:
+  container: vllm-node-tf5
+  gpu_memory_utilization: 0.3
+  max_model_len: 4096
