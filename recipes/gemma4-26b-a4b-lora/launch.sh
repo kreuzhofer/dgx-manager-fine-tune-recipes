@@ -81,10 +81,17 @@ else:
 # Flush page cache
 sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
 
+# Increase NCCL timeout for large model ZeRO-3 all-gather operations
+# Default 10min is too short for 26B model on DGX Spark
+export NCCL_TIMEOUT=14400  # 4 hours in seconds
+export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=14400
+export TORCH_DIST_INIT_BARRIER=1
+
 echo "=== DGX Manager Fine-Tune ==="
 echo "Node: $(hostname)"
 echo "Nodes: ${NUM_NODES}, Rank: ${NODE_RANK}"
 echo "Master: ${MASTER_ADDR}:${MASTER_PORT}"
+echo "NCCL timeout: ${NCCL_TIMEOUT}s"
 echo "Script: ${TRAIN_SCRIPT}"
 echo "Args: ${TRAIN_ARGS[*]}"
 echo "============================="
