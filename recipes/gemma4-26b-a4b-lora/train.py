@@ -16,9 +16,16 @@ from trl import SFTTrainer, SFTConfig
 
 apply_all()
 
+# Increase NCCL timeout BEFORE any process group init.
+# ZeRO-3 loading does hundreds of broadcasts during from_pretrained;
+# the default 30-min timeout is too short for 26B on DGX Spark.
+import datetime
+torch.distributed.constants.default_pg_timeout = datetime.timedelta(hours=4)
+torch.distributed.constants.default_pg_nccl_timeout = datetime.timedelta(hours=4)
+
 
 def main():
-    p = argparse.ArgumentParser(description="Fine-tune Gemma 4 E4B with DeepSpeed ZeRO + LoRA")
+    p = argparse.ArgumentParser(description="Fine-tune Gemma 4 26B-A4B with DeepSpeed ZeRO-3 + LoRA")
     add_common_args(p)
     add_deepspeed_args(p)
     args = p.parse_known_args()[0]
