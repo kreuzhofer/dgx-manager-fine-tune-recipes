@@ -81,11 +81,11 @@ else:
 # Flush page cache
 sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
 
-# Increase NCCL timeout for large model ZeRO-3 all-gather operations
-# Default 10min is too short for 26B model on DGX Spark
-export NCCL_TIMEOUT=14400  # 4 hours in seconds
-export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=14400
-export TORCH_DIST_INIT_BARRIER=1
+# Disable NCCL timeout for large model ZeRO-3 all-gather operations.
+# PyTorch hardcodes NCCL timeout to 10min and env vars don't override it
+# (known PyTorch bug #124950). ASYNC_ERROR_HANDLING disables the timeout.
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+export NCCL_ASYNC_ERROR_HANDLING=1
 
 echo "=== DGX Manager Fine-Tune ==="
 echo "Node: $(hostname)"
