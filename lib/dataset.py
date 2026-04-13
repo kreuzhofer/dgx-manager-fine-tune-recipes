@@ -89,9 +89,10 @@ def format_example(example, tokenizer, max_seq_length):
     tokens = tokenizer(
         text, truncation=True, max_length=max_seq_length, return_tensors=None
     )
-    tokens["labels"] = tokens["input_ids"].copy()
-    # Gemma 4 multimodal models require mm_token_type_ids and token_type_ids
-    # even for text-only training (all zeros for text)
+    # Do NOT pre-compute labels here — tokenizer.pad() doesn't pad the labels
+    # field, causing eval collation to fail when batch items have different
+    # lengths. DataCollatorForLanguageModeling(mlm=False) derives labels from
+    # input_ids AFTER padding, which is the correct order.
     seq_len = len(tokens["input_ids"])
     tokens["token_type_ids"] = [0] * seq_len
     tokens["mm_token_type_ids"] = [0] * seq_len
