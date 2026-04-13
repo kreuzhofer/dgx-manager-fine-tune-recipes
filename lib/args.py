@@ -19,6 +19,14 @@ def add_common_args(parser):
                         default="q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--eval_fraction", type=float, default=0.1)
+    parser.add_argument("--save_steps", type=int, default=500)
+    parser.add_argument("--eval_steps", type=int, default=250)
+    parser.add_argument("--save_only_model", type=lambda s: str(s).lower() == "true",
+                        default=True,
+                        help="If true (default), save only the model weights "
+                             "(small, but DeepSpeed full resume not possible). "
+                             "Set false to save full DeepSpeed state for resume.")
+    parser.add_argument("--save_total_limit", type=int, default=3)
     parser.add_argument("--resume_from_checkpoint", default=None,
                         help="Resume from output_dir's latest checkpoint. Pass 'true' "
                              "to auto-detect or a specific checkpoint dir path.")

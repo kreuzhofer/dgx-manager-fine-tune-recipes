@@ -73,9 +73,9 @@ def main():
             max_steps=args.max_steps, num_train_epochs=args.num_train_epochs,
             learning_rate=args.learning_rate, bf16=True, optim="adamw_torch",
             warmup_steps=5, logging_steps=1,
-            save_strategy="steps", save_steps=500, save_total_limit=3,
-            save_only_model=True,
-            eval_strategy="steps" if eval_ds else "no", eval_steps=250,
+            save_strategy="steps", save_steps=args.save_steps,
+            save_total_limit=args.save_total_limit, save_only_model=args.save_only_model,
+            eval_strategy="steps" if eval_ds else "no", eval_steps=args.eval_steps,
             seed=args.seed, max_length=args.max_seq_length, packing=False,
             report_to="none", deepspeed=args.ds_config, skip_memory_metrics=True,
             remove_unused_columns=False))
