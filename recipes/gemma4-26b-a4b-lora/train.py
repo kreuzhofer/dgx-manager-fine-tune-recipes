@@ -74,7 +74,7 @@ def main():
             learning_rate=args.learning_rate, bf16=True, optim="adamw_torch",
             warmup_steps=5, logging_steps=1,
             save_strategy="steps", save_steps=500, save_total_limit=3,
-            eval_strategy="epoch" if eval_ds else "no",
+            eval_strategy="steps" if eval_ds else "no", eval_steps=500,
             seed=args.seed, max_length=args.max_seq_length, packing=False,
             report_to="none", deepspeed=args.ds_config, skip_memory_metrics=True,
             remove_unused_columns=False))
