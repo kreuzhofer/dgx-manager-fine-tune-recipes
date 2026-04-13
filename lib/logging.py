@@ -50,12 +50,14 @@ def setup_logging(output_dir, filename="train.log"):
     Call this at the start of training before any output.
     The log file is created at {output_dir}/{filename}.
     """
+    # File capture is now done at the shell level via tee in launch.sh.
+    # Shell-level tee captures EVERYTHING (Python prints, C extensions,
+    # PyTorch/DeepSpeed native loaders) and writes per-rank files to avoid
+    # garbled NFS interleaving. We just print a session header here so
+    # resumed runs are clearly delimited in the appended log.
     os.makedirs(output_dir, exist_ok=True)
-    log_path = os.path.join(output_dir, filename)
-    log_file = open(log_path, "w")
-    sys.stdout = Tee(sys.__stdout__, log_file)
-    sys.stderr = Tee(sys.__stderr__, log_file)
-    print(f"Logging to {log_path}", flush=True)
+    rank = os.environ.get("RANK", "0")
+    print(f"\n=== Rank {rank}: logging session started ({os.environ.get('TORCHELASTIC_RUN_ID', 'local')}) ===", flush=True)
 
 
 class LogMetricsCallback(TrainerCallback):

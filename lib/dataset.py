@@ -109,11 +109,15 @@ def prepare_datasets(path_or_id, tokenizer, max_seq_length, eval_fraction=0.1, s
     if world_rank == 0:
         print(f"Dataset columns: {raw.column_names}, {len(raw)} examples", flush=True)
 
+    # load_from_cache_file=False: HF datasets fingerprint hashing misses changes
+    # behind a `lambda`, so edits to format_example don't invalidate the cache.
+    # We pay ~1-2 min to re-tokenize; far cheaper than debugging stale-cache bugs.
     tokenized = raw.map(
         lambda ex: format_example(ex, tokenizer, max_seq_length),
         remove_columns=raw.column_names,
         num_proc=4,
         desc="Tokenizing",
+        load_from_cache_file=False,
     )
 
     if eval_fraction > 0:
