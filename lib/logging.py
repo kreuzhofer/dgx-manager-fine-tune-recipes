@@ -67,6 +67,10 @@ class LogMetricsCallback(TrainerCallback):
     [TRAIN] and [EVAL] lines that the agent can reliably parse.
     """
 
+    def __init__(self):
+        super().__init__()
+        self._eval_running = False
+
     def on_log(self, args, state, control, logs=None, **kwargs):
         if logs and "loss" in logs:
             step = state.global_step
@@ -77,5 +81,15 @@ class LogMetricsCallback(TrainerCallback):
         if logs and "eval_loss" in logs:
             print(f"[EVAL] eval_loss={logs['eval_loss']}", flush=True)
 
+    def on_prediction_step(self, args, state, control, **kwargs):
+        # Fired on each eval batch. Print the phase marker only on the first
+        # batch of each eval cycle — the agent parses this to flip the UI
+        # phase to "eval" while the tqdm progress is still running.
+        # on_evaluate fires AFTER eval finishes, which is too late.
+        if not self._eval_running:
+            print("[EVAL] Running evaluation...", flush=True)
+            self._eval_running = True
+
     def on_evaluate(self, args, state, control, **kwargs):
-        print("[EVAL] Running evaluation...", flush=True)
+        # Eval cycle complete — reset so the next one re-arms the prediction hook.
+        self._eval_running = False
