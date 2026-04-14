@@ -11,4 +11,8 @@ echo "Script: ${TRAIN_SCRIPT}"
 echo "Args: $@"
 echo "========================================"
 
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "$0")/../.." && pwd)/lib/setup_logging.sh"
+setup_shell_log_tee "$@"
+
 exec python "$TRAIN_SCRIPT" "$@"

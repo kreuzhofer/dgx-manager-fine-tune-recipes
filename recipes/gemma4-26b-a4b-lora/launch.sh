@@ -96,30 +96,12 @@ echo "Script: ${TRAIN_SCRIPT}"
 echo "Args: ${TRAIN_ARGS[*]}"
 echo "============================="
 
-# Extract --output_dir from TRAIN_ARGS so we can write per-rank logs there.
-# Per-rank files avoid interleaved/garbled output from concurrent NFS writes
-# when multiple ranks share one log file. Shell-level tee captures EVERYTHING
-# (Python prints, C extensions, PyTorch/DeepSpeed loaders) — Python's
-# sys.stdout-based Tee misses native C/C++ output written to fd 1/2 directly.
-OUTPUT_DIR=""
-for ((i=0; i<${#TRAIN_ARGS[@]}; i++)); do
-    if [[ "${TRAIN_ARGS[$i]}" == "--output_dir" ]]; then
-        OUTPUT_DIR="${TRAIN_ARGS[$((i+1))]}"
-        break
-    fi
-done
-if [ -n "$OUTPUT_DIR" ]; then
-    mkdir -p "$OUTPUT_DIR"
-    if [ "$NODE_RANK" -eq 0 ]; then
-        RANK_LOG="$OUTPUT_DIR/train.log"
-    else
-        RANK_LOG="$OUTPUT_DIR/train-rank${NODE_RANK}.log"
-    fi
-    echo "[launch] Tee'ing all output to $RANK_LOG"
-    # Process substitution: tee writes to file AND inherited stdout (so the
-    # agent's docker exec / worker log redirect still see the stream live).
-    exec > >(tee -a "$RANK_LOG") 2>&1
-fi
+# Set up shell-level tee of stdout/stderr to per-rank log files. Extracted
+# to lib/setup_logging.sh so all recipes use the same capture logic.
+export NODE_RANK
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "$0")/../.." && pwd)/lib/setup_logging.sh"
+setup_shell_log_tee "${TRAIN_ARGS[@]}"
 
 exec torchrun \
     --nnodes="$NUM_NODES" \
