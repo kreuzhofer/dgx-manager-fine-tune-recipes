@@ -69,7 +69,19 @@ def patch_peft_for_clippable_linear():
     Instead of modifying the model architecture (which breaks weight key names for serving),
     we patch PEFT's dispatch to recognize ClippableLinear and wrap its inner .linear layer.
     The model architecture and weight names stay unchanged.
+
+    Also disables the torchao dispatcher — the NGC pytorch:25.11 image ships
+    torchao 0.14.0 but PEFT's version check requires >= 0.16.0, which crashes
+    `PeftModel.from_pretrained()` for merges. We don't use torchao, so make its
+    availability check return False and let the other dispatchers pick the target.
     """
+    try:
+        import peft.import_utils as peft_import_utils
+        peft_import_utils.is_torchao_available = lambda *a, **kw: False
+        print("Disabled PEFT torchao dispatcher (version mismatch on NGC images)", flush=True)
+    except ImportError:
+        pass
+
     try:
         import torch.nn as nn
         from peft.tuners.lora import model as lora_model
