@@ -75,11 +75,20 @@ def patch_peft_for_clippable_linear():
     `PeftModel.from_pretrained()` for merges. We don't use torchao, so make its
     availability check return False and let the other dispatchers pick the target.
     """
+    # Disable PEFT's torchao dispatcher entirely. The NGC pytorch:25.11 image
+    # ships torchao 0.14.0 but PEFT requires >= 0.16.0 and raises ImportError
+    # from is_torchao_available() — which torchao.py imports at module load
+    # time, so patching peft.import_utils alone is too late. Replace the
+    # dispatch function itself with a no-op that returns None (= "I don't
+    # handle this target") so the chain falls through to dispatch_default.
     try:
+        from peft.tuners.lora import torchao as peft_torchao
         import peft.import_utils as peft_import_utils
         peft_import_utils.is_torchao_available = lambda *a, **kw: False
+        peft_torchao.is_torchao_available = lambda *a, **kw: False
+        peft_torchao.dispatch_torchao = lambda *a, **kw: None
         print("Disabled PEFT torchao dispatcher (version mismatch on NGC images)", flush=True)
-    except ImportError:
+    except (ImportError, AttributeError):
         pass
 
     try:
