@@ -107,7 +107,7 @@ def patch_peft_for_clippable_linear():
                     and not isinstance(target, nn.Linear)):
                 if lora_config and hasattr(lora_config, 'loftq_config'):
                     kwargs.update(lora_config.loftq_config)
-                return LoraLinear(target.linear, adapter_name, **kwargs)
+                return LoraLinear(target.linear, adapter_name, config=lora_config, **kwargs)
             return _orig_dispatch(target, adapter_name, config=lora_config, **kwargs)
 
         lora_model.dispatch_default = _patched_dispatch
