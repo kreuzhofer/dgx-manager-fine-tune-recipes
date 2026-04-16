@@ -98,14 +98,17 @@ def patch_peft_for_clippable_linear():
 
         _orig_dispatch = lora_model.dispatch_default
 
-        def _patched_dispatch(target, adapter_name, lora_config, **kwargs):
+        def _patched_dispatch(target, adapter_name, config=None, **kwargs):
+            # Newer PEFT passes lora_config as keyword `config=`, older as positional.
+            lora_config = config
             # If the target has a .linear attribute that is nn.Linear,
             # it's a wrapper like Gemma4ClippableLinear — target the inner linear
             if (hasattr(target, 'linear') and isinstance(target.linear, nn.Linear)
                     and not isinstance(target, nn.Linear)):
-                kwargs.update(lora_config.loftq_config)
+                if lora_config and hasattr(lora_config, 'loftq_config'):
+                    kwargs.update(lora_config.loftq_config)
                 return LoraLinear(target.linear, adapter_name, **kwargs)
-            return _orig_dispatch(target, adapter_name, lora_config, **kwargs)
+            return _orig_dispatch(target, adapter_name, config=lora_config, **kwargs)
 
         lora_model.dispatch_default = _patched_dispatch
         print("Patched PEFT dispatch for Gemma4ClippableLinear support", flush=True)
