@@ -1,0 +1,41 @@
+recipe_version: "1"
+name: Gemma-4-26B-A4B-Base-LoRA
+description: LoRA fine-tune for Google Gemma 4 26B-A4B BASE (non-IT, MoE, 26B total / ~4B effective) on DGX Spark
+base_model: google/gemma-4-26B-A4B
+framework: deepspeed
+method: lora
+dataset_format: sharegpt
+
+container:
+  image: nvcr.io/nvidia/pytorch:25.11-py3
+  name: dgx-finetune
+
+scripts:
+  entrypoint: entrypoint.sh
+  train: train.py
+  launch: launch.sh
+  ds_config: ds_config.json
+
+defaults:
+  learning_rate: 0.0001
+  batch_size: 1
+  gradient_accumulation_steps: 8
+  max_seq_length: 2048
+  num_train_epochs: 1
+  max_steps: -1
+  lora_r: 16
+  lora_alpha: 16
+  lora_dropout: 0.0
+  lora_target_modules: q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj
+  seed: 42
+  eval_fraction: 0.1
+
+hardware:
+  min_nodes: 3
+  gpus_per_node: 1
+  vram_estimate_mb: 49152
+
+deploy:
+  container: vllm-node-tf5
+  gpu_memory_utilization: 0.5
+  max_model_len: 4096
