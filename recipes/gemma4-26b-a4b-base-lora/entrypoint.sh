@@ -22,14 +22,17 @@ EOF
 echo "StrictHostKeyChecking no" >> /root/.ssh/config
 
 echo "=== Installing dependencies ==="
+# peft >= 0.17.0 needed for target_parameters to reach fused-expert MoE
+# tensors. Older PEFT silently skips them, leaving only ~30M attention LoRA.
 pip install -q \
     "transformers>=4.51.0" \
-    peft \
+    "peft>=0.17.0" \
     datasets \
     "trl>=0.16.0" \
     accelerate \
     deepspeed \
     hf_transfer
+echo "PEFT version: $(python -c 'import peft; print(peft.__version__)')"
 
 echo "=== Ready ==="
 

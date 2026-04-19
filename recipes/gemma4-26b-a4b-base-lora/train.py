@@ -52,12 +52,46 @@ def main():
     gc.collect()
     flush_page_cache()
 
-    target_modules = [m.strip() for m in args.lora_target_modules.split(",")]
+    # MoE LoRA: standard target_modules cannot reach the fused-expert
+    # `mlp.experts.gate_up_proj` / `down_proj` Parameter tensors (they're not
+    # nn.Linear modules, so PEFT's named_modules() walk skips them). Without
+    # target_parameters we only LoRA the attention projections and end up with
+    # ~30M / 26B = 0.12% trainable — way below the normal ~1% range — and the
+    # experts (where most knowledge lives) stay frozen. target_parameters is
+    # PEFT's mechanism for slicing into those fused tensors per-expert.
+    attn_targets = ["q_proj", "k_proj", "v_proj", "o_proj"]
+    moe_param_targets = ["mlp.experts.gate_up_proj", "mlp.experts.down_proj"]
+
     model = get_peft_model(model, LoraConfig(
-        r=args.lora_r, lora_alpha=args.lora_alpha, target_modules=target_modules,
+        r=args.lora_r, lora_alpha=args.lora_alpha,
+        target_modules=attn_targets,
+        target_parameters=moe_param_targets,
         lora_dropout=args.lora_dropout, bias="none", task_type="CAUSAL_LM"))
+
+    # Freeze the router — fine-tuning routing weights destabilizes which
+    # experts see which tokens, creating a feedback loop with the LoRA updates.
+    router_frozen = 0
+    for name, p in model.named_parameters():
+        if ".gate.weight" in name or "router" in name:
+            if p.requires_grad:
+                p.requires_grad = False
+                router_frozen += 1
+
     if world_rank == 0:
         model.print_trainable_parameters()
+        trainable, total = model.get_nb_trainable_parameters()
+        pct = trainable / total * 100
+        print(f"[LoRA capacity] {trainable:,} / {total:,} = {pct:.3f}%", flush=True)
+        print(f"[Router] froze {router_frozen} parameter tensors", flush=True)
+        # Sanity check: with target_parameters reaching 256 experts × rank 16
+        # we expect ~1% trainable. If we see ~0.1% the experts weren't reached
+        # and there's no point burning the rest of the run.
+        if pct < 0.5:
+            raise RuntimeError(
+                f"LoRA capacity too low ({pct:.3f}%): target_parameters likely "
+                f"failed to reach the fused MoE experts. Check PEFT version "
+                f"(needs >= 0.16) and parameter names in the model. Aborting."
+            )
 
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     fix_gemma4_use_cache(model)
