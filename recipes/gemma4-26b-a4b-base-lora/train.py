@@ -59,8 +59,13 @@ def main():
     # ~30M / 26B = 0.12% trainable — way below the normal ~1% range — and the
     # experts (where most knowledge lives) stay frozen. target_parameters is
     # PEFT's mechanism for slicing into those fused tensors per-expert.
-    attn_targets = ["q_proj", "k_proj", "v_proj", "o_proj"]
-    moe_param_targets = ["mlp.experts.gate_up_proj", "mlp.experts.down_proj"]
+    # Gemma 4 26B-A4B has a shared-expert + routed-experts pattern per layer:
+    #   layers.N.mlp.{gate,up,down}_proj.weight  — dense "shared" MLP (nn.Linear)
+    #   layers.N.experts.{gate_up,down}_proj     — fused 128-expert tensors (Parameter)
+    # Target both via target_modules (dense Linear) and target_parameters (fused).
+    attn_targets = ["q_proj", "k_proj", "v_proj", "o_proj",
+                    "gate_proj", "up_proj", "down_proj"]
+    moe_param_targets = ["experts.gate_up_proj", "experts.down_proj"]
 
     model = get_peft_model(model, LoraConfig(
         r=args.lora_r, lora_alpha=args.lora_alpha,
