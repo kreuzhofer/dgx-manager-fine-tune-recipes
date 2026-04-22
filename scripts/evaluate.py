@@ -60,8 +60,17 @@ def generate_sql(model, tokenizer, schema, question, max_new_tokens=256):
 
 
 def normalize_sql(sql):
-    """Normalize SQL for comparison."""
+    """Normalize SQL for comparison.
+
+    Handles instruction-tuned models that wrap SQL in markdown code blocks
+    with natural language explanation (common with -it models like 26B-A4B-it).
+    """
+    import re
     s = sql.strip()
+    # Extract SQL from markdown code blocks: ```sql\n...\n``` or ```\n...\n```
+    code_block = re.search(r"```(?:sql)?\s*\n?(.*?)```", s, re.DOTALL | re.IGNORECASE)
+    if code_block:
+        s = code_block.group(1).strip()
     # Remove chat template artifacts
     for tag in ["<end_of_turn>", "<start_of_turn>", "model", "user"]:
         s = s.split(tag)[0]
