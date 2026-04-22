@@ -55,6 +55,18 @@ def main():
     train_ds, eval_ds = prepare_datasets(
         args.dataset, tokenizer, args.max_seq_length, args.eval_fraction, args.seed, world_rank)
 
+    # lib.dataset.format_example unconditionally emits token_type_ids and
+    # mm_token_type_ids (needed by Gemma 4's multimodal collator). Qwen 3.6
+    # doesn't use either, and the standard DataCollatorForLanguageModeling
+    # can't pad these variable-length lists across a batch — eval crashes
+    # at the first multi-example batch with "expected sequence of length N
+    # at dim 1 (got M)". Drop them now.
+    qwen_drop_cols = [c for c in ("token_type_ids", "mm_token_type_ids") if c in train_ds.column_names]
+    if qwen_drop_cols:
+        train_ds = train_ds.remove_columns(qwen_drop_cols)
+        if eval_ds is not None:
+            eval_ds = eval_ds.remove_columns(qwen_drop_cols)
+
     print(f"[Rank {world_rank}] Loading model: {args.model_name}", flush=True)
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name, dtype=torch.bfloat16, trust_remote_code=True)
