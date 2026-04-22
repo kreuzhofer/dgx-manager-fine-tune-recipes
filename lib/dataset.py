@@ -111,13 +111,20 @@ def prepare_datasets(path_or_id, tokenizer, max_seq_length, eval_fraction=0.1, s
 
     # load_from_cache_file=False: HF datasets fingerprint hashing misses changes
     # behind a `lambda`, so edits to format_example don't invalidate the cache.
-    # We pay ~1-2 min to re-tokenize; far cheaper than debugging stale-cache bugs.
+    # keep_in_memory=True: skip writing to the NFS-backed cache. Without this,
+    # multi-rank training has every rank simultaneously writing the same
+    # `.arrow` files; the resulting size races mean a rank later mmaps a file
+    # shorter than its on-disk header advertises and dies with SIGBUS deep
+    # inside pyarrow. The dataset is small enough to fit in RAM (~78K
+    # examples × 256 tokens × ~10B per token = ~200 MB), so paying the
+    # tokenization cost in-memory is cheap insurance.
     tokenized = raw.map(
         lambda ex: format_example(ex, tokenizer, max_seq_length),
         remove_columns=raw.column_names,
         num_proc=4,
         desc="Tokenizing",
         load_from_cache_file=False,
+        keep_in_memory=True,
     )
 
     if eval_fraction > 0:
