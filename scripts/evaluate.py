@@ -89,19 +89,44 @@ def generate_sql(model, tokenizer, schema, question, max_new_tokens=256):
 def normalize_sql(sql):
     """Normalize SQL for comparison.
 
-    Handles instruction-tuned models that wrap SQL in markdown code blocks
-    with natural language explanation (common with -it models like 26B-A4B-it).
+    Handles three output styles:
+      1. Plain SQL (Gemma-style base model, raw SELECT ...)
+      2. Closed markdown code block: ```sql ... ``` (IT model style)
+      3. Verbose reasoning model (Qwen 3.6) where SQL appears after a
+         "SQL:" label, possibly inside a backtick-prefixed-but-unclosed
+         span, possibly after the response was truncated mid-thought.
+
+    Strategy:
+      - Try closed markdown block first (most reliable).
+      - Else: find the LAST `SELECT` keyword in the response and take from
+        there to either the next code-fence boundary or end of string.
+        Strip trailing markdown/punctuation noise.
     """
     import re
     s = sql.strip()
-    # Extract SQL from markdown code blocks: ```sql\n...\n``` or ```\n...\n```
+    # 1. Closed markdown code block
     code_block = re.search(r"```(?:sql)?\s*\n?(.*?)```", s, re.DOTALL | re.IGNORECASE)
     if code_block:
         s = code_block.group(1).strip()
+    else:
+        # 2. Find the last SELECT (case-insensitive) — that's almost always
+        # the model's final answer for SQL-gen prompts.
+        matches = list(re.finditer(r"\bSELECT\b", s, re.IGNORECASE))
+        if matches:
+            start = matches[-1].start()
+            tail = s[start:]
+            # Hard cut at the first SQL terminator or markdown fence/backtick
+            # that follows the SELECT — anything after is reasoning/comments,
+            # not the answer.
+            cuts = [tail.find(c) for c in [";", "```", "\n`", "\n\nNote", "\n\nThis ", "\n\nExplanation"]]
+            cuts = [c for c in cuts if c > 0]
+            if cuts:
+                tail = tail[:min(cuts)]
+            s = tail.strip().lstrip("`").strip()
     # Remove chat template artifacts
-    for tag in ["<end_of_turn>", "<start_of_turn>", "model", "user"]:
+    for tag in ["<end_of_turn>", "<start_of_turn>", "<|im_end|>", "<|im_start|>", "model", "user"]:
         s = s.split(tag)[0]
-    s = s.strip().rstrip(";")
+    s = s.strip().rstrip(";").rstrip("`").strip()
     # Normalize quotes (single → double)
     s = s.replace("'", '"')
     return " ".join(s.lower().split())
@@ -248,7 +273,11 @@ def main():
     parser.add_argument("--api-key", default=None)
     parser.add_argument("--concurrency", type=int, default=1,
                         help="parallel HTTP requests (HTTP mode only)")
-    parser.add_argument("--max-tokens", type=int, default=256)
+    parser.add_argument("--max-tokens", type=int, default=2048,
+                        help="generation cap. Reasoning models (Qwen 3.6, etc.) "
+                             "routinely use 1500+ tokens of internal thinking before "
+                             "emitting the answer; 2048 leaves headroom. Direct-output "
+                             "fine-tuned models will stop early via EOS regardless.")
     parser.add_argument("--dataset", default="b-mc2/sql-create-context")
     parser.add_argument("--num-examples", type=int, default=100)
     parser.add_argument("--results-dir", default="/workspace/outputs/eval")
