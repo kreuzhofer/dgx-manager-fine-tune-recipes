@@ -10,22 +10,6 @@ Architecture notes (vs the Gemma 4 26B-A4B recipe this was adapted from):
   convention as Gemma 4 26B-A4B.
 - vLLM resolves architecture as `Qwen3_5MoeForConditionalGeneration` —
   Qwen 3.5 and 3.6 share the same model class.
-
-Multimodal-wrapper choice:
-  Qwen 3.6 is shipped as multimodal (`Qwen3_5MoeForConditionalGeneration`
-  wraps `Qwen3_5MoeForCausalLM`). Loading via AutoModelForCausalLM gave
-  the LM-only sub-model, but `save_pretrained` on that produced a
-  checkpoint with `model_type=qwen3_5_moe_text` and `architectures=
-  ['Qwen3_5MoeForCausalLM']` — neither of which transformers/vLLM
-  recognize, so the merged model couldn't be served without a hand-roll
-  merge into the base safetensors. Loading via the multimodal class
-  preserves the wrapper through training+save+merge so the standard
-  PEFT merge_and_unload + save_pretrained pipeline produces a
-  vLLM-loadable checkpoint identical in layout to the base.
-
-  Cost: the vision tower is loaded into memory (frozen, no LoRA) and
-  written back out in the merged safetensors. Adds ~1-2 GB to the
-  saved model but no extra training compute.
 """
 
 import sys, os
@@ -37,9 +21,9 @@ from lib.logging import setup_logging, LogMetricsCallback
 from lib.tokenizer import setup_tokenizer
 from lib.args import add_common_args, add_deepspeed_args
 
-import argparse, gc, re, torch
+import argparse, gc, torch
 from peft import LoraConfig, get_peft_model
-from transformers import AutoModelForImageTextToText, DataCollatorForLanguageModeling
+from transformers import AutoModelForCausalLM, DataCollatorForLanguageModeling
 from trl import SFTTrainer, SFTConfig
 
 apply_all()
@@ -84,32 +68,29 @@ def main():
             eval_ds = eval_ds.remove_columns(qwen_drop_cols)
 
     print(f"[Rank {world_rank}] Loading model: {args.model_name}", flush=True)
-    # Multimodal class so save_pretrained writes a vLLM-loadable checkpoint
-    # with the wrapper preserved — see module docstring for the full reason.
-    model = AutoModelForImageTextToText.from_pretrained(
+    model = AutoModelForCausalLM.from_pretrained(
         args.model_name, dtype=torch.bfloat16, trust_remote_code=True)
     print(f"[Rank {world_rank}] Model loaded.", flush=True)
     gc.collect()
     flush_page_cache()
 
-    # MoE LoRA target strategy:
-    #   - target_modules → ONLY the language model's full-attention projections.
-    #     We must constrain to `language_model.*` so LoRA isn't accidentally
-    #     applied to the vision tower's q/k/v/o (irrelevant for a text task,
-    #     and would inflate trainable params + slow training). Substring
-    #     match isn't enough — both towers have q_proj. Use a regex pattern.
-    #   - target_parameters → fused expert tensors. The `experts.gate_up_proj`
-    #     / `experts.down_proj` names only exist inside language_model, so a
-    #     plain endswith match is safe here (no vision-tower experts).
-    # Qwen3.5MoE expert layout per language layer:
-    #   language_model.layers.N.mlp.experts.gate_up_proj  (256 × 2*moe_inter × hidden)
-    #   language_model.layers.N.mlp.experts.down_proj     (256 × hidden × moe_inter)
-    attn_pattern = r".*language_model\.layers\.\d+\.self_attn\.(q|k|v|o)_proj$"
+    # MoE LoRA target strategy (same as Gemma 4 26B-A4B but for hybrid arch):
+    #   - target_modules → only full-attention projections (q/k/v/o). Mamba
+    #     layers' in_proj/out_proj are skipped because LoRA doesn't compose
+    #     well with stateful SSM updates.
+    #   - target_parameters → fused expert tensors. PEFT's named_modules()
+    #     walk skips Parameter tensors, so without target_parameters only the
+    #     attention LoRAs apply and we end up with ~30M / 35B = 0.09%
+    #     trainable — way below the normal ~1% range.
+    # Qwen3.5MoE expert layout per layer:
+    #   layers.N.mlp.experts.gate_up_proj  (256 × 2 × moe_intermediate × hidden)
+    #   layers.N.mlp.experts.down_proj     (256 × hidden × moe_intermediate)
+    attn_targets = ["q_proj", "k_proj", "v_proj", "o_proj"]
     moe_param_targets = ["experts.gate_up_proj", "experts.down_proj"]
 
     model = get_peft_model(model, LoraConfig(
         r=args.lora_r, lora_alpha=args.lora_alpha,
-        target_modules=attn_pattern,
+        target_modules=attn_targets,
         target_parameters=moe_param_targets,
         lora_dropout=args.lora_dropout, bias="none", task_type="CAUSAL_LM"))
 
