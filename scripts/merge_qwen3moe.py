@@ -66,17 +66,45 @@ from safetensors.torch import save_file
 def _resolve_base_dir(base):
     """Accept either a local snapshot dir or a HuggingFace model id and
     return a Path pointing at the actual snapshot directory (with
-    config.json + *.safetensors)."""
+    config.json + *.safetensors).
+
+    `snapshot_download(local_files_only=True)` returns whatever revision
+    matches HEAD — which can be an incomplete snapshot (e.g. a metadata-
+    only refresh that only wrote config.json). If that happens we scan
+    all cached snapshots for one that actually contains the weights.
+    """
     p = Path(base)
     if p.is_dir():
         return p
-    # Looks like an HF id (e.g. "Qwen/Qwen3.6-35B-A3B"): resolve to the
-    # cached snapshot. local_files_only=True avoids any download; the
-    # merge container has HF_HOME mounted from the shared cache.
-    if "/" in base and not base.startswith("/"):
-        from huggingface_hub import snapshot_download
-        return Path(snapshot_download(base, local_files_only=True))
-    raise SystemExit(f"Cannot resolve base model: {base} (not a dir, not a HF id)")
+    if "/" not in base or base.startswith("/"):
+        raise SystemExit(f"Cannot resolve base model: {base} (not a dir, not a HF id)")
+
+    from huggingface_hub import snapshot_download
+    try:
+        snap = Path(snapshot_download(base, local_files_only=True))
+    except Exception as e:
+        snap = None
+        print(f"  snapshot_download failed: {e}")
+
+    def has_weights(dir_path):
+        p = Path(dir_path)
+        return p.is_dir() and any(p.glob("*.safetensors"))
+
+    if snap is not None and has_weights(snap):
+        return snap
+
+    # Fall back: look through the on-disk cache for a snapshot with weights.
+    # Cache layout: $HF_HOME/hub/models--{org}--{name}/snapshots/<rev>/
+    import os
+    hf_home = os.environ.get("HF_HOME") or os.path.expanduser("~/.cache/huggingface")
+    org, name = base.split("/", 1)
+    snap_root = Path(hf_home) / "hub" / f"models--{org}--{name}" / "snapshots"
+    if snap_root.is_dir():
+        for child in sorted(snap_root.iterdir(), key=lambda c: c.stat().st_mtime, reverse=True):
+            if has_weights(child):
+                print(f"  falling back to {child} (has .safetensors)")
+                return child
+    raise SystemExit(f"No cached snapshot of {base} has .safetensors weights (checked {snap_root})")
 
 
 def load_st_index(base_dir):
