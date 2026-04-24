@@ -63,6 +63,22 @@ from safetensors import safe_open
 from safetensors.torch import save_file
 
 
+def _resolve_base_dir(base):
+    """Accept either a local snapshot dir or a HuggingFace model id and
+    return a Path pointing at the actual snapshot directory (with
+    config.json + *.safetensors)."""
+    p = Path(base)
+    if p.is_dir():
+        return p
+    # Looks like an HF id (e.g. "Qwen/Qwen3.6-35B-A3B"): resolve to the
+    # cached snapshot. local_files_only=True avoids any download; the
+    # merge container has HF_HOME mounted from the shared cache.
+    if "/" in base and not base.startswith("/"):
+        from huggingface_hub import snapshot_download
+        return Path(snapshot_download(base, local_files_only=True))
+    raise SystemExit(f"Cannot resolve base model: {base} (not a dir, not a HF id)")
+
+
 def load_st_index(base_dir):
     """Load model.safetensors.index.json → {tensor_name: shard_filename}."""
     idx = Path(base_dir) / "model.safetensors.index.json"
@@ -180,14 +196,19 @@ def _resolve_target(root_clean, slot):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--base", required=True, help="Base model snapshot dir (with config.json + safetensors)")
-    p.add_argument("--adapter", required=True, help="PEFT adapter dir")
-    p.add_argument("--output", required=True, help="Output dir for merged safetensors")
+    # Accept both --base/--adapter/--output (original) and --base_model/
+    # --adapter_path/--output_dir (agent merge contract, shared with
+    # scripts/merge.py). The agent passes the second form; either works
+    # at the command line.
+    p.add_argument("--base", "--base_model", dest="base", required=True,
+                   help="Base model: local snapshot dir OR HuggingFace id (e.g. Qwen/Qwen3.6-35B-A3B)")
+    p.add_argument("--adapter", "--adapter_path", dest="adapter", required=True, help="PEFT adapter dir")
+    p.add_argument("--output", "--output_dir", dest="output", required=True, help="Output dir for merged safetensors")
     p.add_argument("--num-experts", type=int, default=256, help="MoE expert count (Qwen 3.6: 256)")
     p.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"])
     args = p.parse_args()
 
-    base_dir = Path(args.base)
+    base_dir = _resolve_base_dir(args.base)
     adapter_dir = Path(args.adapter)
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)

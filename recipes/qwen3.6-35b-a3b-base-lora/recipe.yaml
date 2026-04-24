@@ -15,6 +15,10 @@ scripts:
   train: train.py
   launch: launch.sh
   ds_config: ds_config.json
+  # Qwen 3.6 needs hand-rolled per-expert LoRA composition because the
+  # generic PEFT merge_and_unload strips the multimodal wrapper and
+  # produces a model vLLM can't load.
+  merge: scripts/merge_qwen3moe.py
 
 defaults:
   learning_rate: 0.0002
