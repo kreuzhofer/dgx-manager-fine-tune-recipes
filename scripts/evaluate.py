@@ -103,6 +103,13 @@ def normalize_sql(sql):
         Strip trailing markdown/punctuation noise.
     """
     import re
+    # Handle None (Qwen3.6 thinking-mode responses where the model burned
+    # max_tokens on reasoning and the final SQL never got emitted —
+    # finish_reason="length", message.content=null). Treat as empty
+    # prediction so the example counts as a miss without crashing the
+    # whole accuracy compute.
+    if sql is None:
+        return ""
     s = sql.strip()
     # 1. Closed markdown code block
     code_block = re.search(r"```(?:sql)?\s*\n?(.*?)```", s, re.DOTALL | re.IGNORECASE)
