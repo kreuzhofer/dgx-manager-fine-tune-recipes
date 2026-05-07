@@ -193,8 +193,35 @@ def fix_gemma4_use_cache(model):
         model.config.use_cache = True
 
 
+def patch_nvtx_dummy_domain():
+    """nvtx's `DummyDomain.push_range` (the no-op stub used when CUDA NVTX
+    profiling isn't loaded) only accepts a single positional `message` arg.
+    DeepSpeed's accelerator calls it with kwargs (`message=..., category=...`)
+    during ZeRO-3 parameter partitioning on multi-rank runs, blowing up with
+    `TypeError: push_range() takes exactly 2 positional arguments (1 given)`.
+
+    Single-rank runs don't trip this because partitioning across 1 rank is
+    a no-op — the call site is never reached. Multi-node runs reproducibly
+    hit it. Make the stub permissive: accept and discard any args/kwargs.
+    """
+    try:
+        import nvtx._lib.lib as nl
+        if hasattr(nl, "DummyDomain"):
+            def _permissive_push_range(self, *args, **kwargs):
+                return None
+            def _permissive_pop_range(self, *args, **kwargs):
+                return None
+            nl.DummyDomain.push_range = _permissive_push_range
+            if hasattr(nl.DummyDomain, "pop_range"):
+                nl.DummyDomain.pop_range = _permissive_pop_range
+            print("Patched nvtx.DummyDomain to accept kwargs (DeepSpeed multi-node ZeRO-3 fix)", flush=True)
+    except ImportError:
+        pass
+
+
 def apply_all():
     """Apply all DGX Spark patches. Call at the top of train.py before any model imports."""
     patch_pynvml()
     patch_safetensors_cache()
     patch_peft_for_clippable_linear()
+    patch_nvtx_dummy_domain()
