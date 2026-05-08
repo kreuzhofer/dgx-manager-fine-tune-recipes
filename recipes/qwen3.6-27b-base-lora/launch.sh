@@ -100,10 +100,23 @@ export NCCL_ASYNC_ERROR_HANDLING=1
 # are configured with .10..13 on rocep1s0f0 and .30..33 on roceP2p1s0f0.
 unset NCCL_IB_HCA
 
+# Use a custom NCCL 2.28.9+ build with sm_121 (Blackwell) codegen,
+# per the official DGX Spark playbook. The build lives on shared NFS
+# at /mnt/tank/nccl-build/installed/lib (mapped to /workspace/... inside
+# the container). LD_LIBRARY_PATH prefix wins over the in-image NCCL.
+NCCL_LIB_DIR="/workspace/nccl-build/installed/lib"
+if [ -f "${NCCL_LIB_DIR}/libnccl.so.2.28.9" ]; then
+  export LD_LIBRARY_PATH="${NCCL_LIB_DIR}:${LD_LIBRARY_PATH:-}"
+  echo "Using custom NCCL: ${NCCL_LIB_DIR}/libnccl.so.2.28.9"
+fi
+
 # Enable NCCL_DEBUG=INFO at job-start time when diagnosing transport
-# / GDR / topology issues. Verified that with both rocep1s0f0 and
-# roceP2p1s0f0 having IPs, NCCL builds 16 channels alternating
-# rail 0 / rail 1 — step time drops ~40% vs single-rail.
+# / GDR / topology issues. Verified: with both rocep1s0f0 and
+# roceP2p1s0f0 having IPs, NCCL 2.28.9+sm_121 builds 16 channels
+# alternating rail 0 / rail 1 — step time drops ~40% vs single-rail.
+# GDR still reports 0 even with the custom build (peermem is N/A on
+# Grace-Hopper unified memory; HPC-X plugin doesn't auto-enable
+# DMABUF GDR). Acceptable — dual-rail captures the bulk of the win.
 
 echo "=== DGX Manager Fine-Tune ==="
 echo "Node: $(hostname)"
