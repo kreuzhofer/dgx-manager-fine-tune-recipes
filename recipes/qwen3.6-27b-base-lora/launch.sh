@@ -87,6 +87,12 @@ sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export NCCL_ASYNC_ERROR_HANDLING=1
 
+# To diagnose NCCL transport / GDR / topology, set NCCL_DEBUG=INFO at
+# job-start time. We don't enable it by default — DGX Spark's NIC is on
+# PCIe Gen5 x4 (~12 GB/s effective), so multi-node ZeRO-3 step time is
+# PCIe-bound, not NCCL-config-bound. See docs/qwen3.6-27b-fine-tuning-on-
+# dgx-spark.md "Multi-node bandwidth ceiling" for the math.
+
 echo "=== DGX Manager Fine-Tune ==="
 echo "Node: $(hostname)"
 echo "Nodes: ${NUM_NODES}, Rank: ${NODE_RANK}"
