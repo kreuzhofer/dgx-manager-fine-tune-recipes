@@ -87,11 +87,23 @@ sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export NCCL_ASYNC_ERROR_HANDLING=1
 
-# To diagnose NCCL transport / GDR / topology, set NCCL_DEBUG=INFO at
-# job-start time. We don't enable it by default — DGX Spark's NIC is on
-# PCIe Gen5 x4 (~12 GB/s effective), so multi-node ZeRO-3 step time is
-# PCIe-bound, not NCCL-config-bound. See docs/qwen3.6-27b-fine-tuning-on-
-# dgx-spark.md "Multi-node bandwidth ceiling" for the math.
+# DGX Spark networking: each 200 GbE QSFP port surfaces as TWO 100G
+# MACs on different PCIe Gen5 x4 lanes (PCI domains 0000 and 0002).
+# To get the full ~25 GB/s wire bandwidth NCCL must use BOTH MACs as
+# rails. The agent's docker run sets a single-HCA value
+# (NCCL_IB_HCA=rocep1s0f0); unset it here so NCCL auto-discovers all
+# RoCE HCAs from /dev/infiniband. Per NVIDIA's official multi-Spark
+# playbook, NCCL_IB_HCA is not prescribed — auto-discovery is the
+# recommended setup.
+#
+# Both MACs must have IPs on the fast subnet for this to work; nodes
+# are configured with .10..13 on rocep1s0f0 and .30..33 on roceP2p1s0f0.
+unset NCCL_IB_HCA
+
+# Enable NCCL_DEBUG=INFO at job-start time when diagnosing transport
+# / GDR / topology issues. Verified that with both rocep1s0f0 and
+# roceP2p1s0f0 having IPs, NCCL builds 16 channels alternating
+# rail 0 / rail 1 — step time drops ~40% vs single-rail.
 
 echo "=== DGX Manager Fine-Tune ==="
 echo "Node: $(hostname)"
