@@ -44,7 +44,11 @@ defaults:
   # automatically skips them. Same safety as the q/k/v/o_proj match.
   lora_target_modules: q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj
   seed: 42
-  eval_fraction: 0.05
+  # 10% eval (vs the attn-only sibling's 5%): this variant targets novel
+  # domains (DSL code-gen) where training-quality is harder to read from a
+  # noisy 5% holdout. On a typical 1-2k-example domain dataset, 10% gives
+  # a meaningful eval-loss signal without sacrificing too much train data.
+  eval_fraction: 0.10
 
 hardware:
   min_nodes: 2
