@@ -21,6 +21,13 @@ def add_common_args(parser):
     parser.add_argument("--eval_fraction", type=float, default=0.1)
     parser.add_argument("--save_steps", type=int, default=500)
     parser.add_argument("--eval_steps", type=int, default=250)
+    parser.add_argument("--packing", type=lambda s: str(s).lower() == "true",
+                        default=False,
+                        help="Enable SFTTrainer sequence packing — concatenate "
+                             "multiple short examples up to max_seq_length to "
+                             "remove padding waste. Default off; set true for "
+                             "throughput on datasets with variable-length "
+                             "examples (e.g., +30-40% on the build123d set).")
     parser.add_argument("--save_only_model", type=lambda s: str(s).lower() == "true",
                         default=True,
                         help="If true (default), save only the model weights "

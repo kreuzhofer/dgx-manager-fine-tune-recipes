@@ -134,7 +134,7 @@ def main():
             save_strategy="steps", save_steps=args.save_steps,
             save_total_limit=args.save_total_limit, save_only_model=args.save_only_model,
             eval_strategy="steps" if eval_ds else "no", eval_steps=args.eval_steps,
-            seed=args.seed, max_length=args.max_seq_length, packing=False,
+            seed=args.seed, max_length=args.max_seq_length, packing=args.packing,
             report_to="none", deepspeed=args.ds_config, skip_memory_metrics=True,
             remove_unused_columns=False))
 
