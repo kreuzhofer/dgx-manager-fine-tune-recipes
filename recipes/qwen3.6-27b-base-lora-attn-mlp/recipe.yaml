@@ -59,9 +59,16 @@ defaults:
   eval_fraction: 0.10
 
 hardware:
-  min_nodes: 2
+  # 4 nodes recommended for novel-domain long-context training: at
+  # eff_batch=8 (4 nodes × grad_accum=2 × bs=1) per-step time halves
+  # vs 2 nodes (eff_batch=8 via 2 × grad_accum=4) at the same gradient
+  # quality. Memory headroom also better: weight shard 27 GB → 13.5 GB.
+  # Note: dashboard training UI uses min_nodes as the exact count (no
+  # picker yet), so this is also the de-facto fixed node count when
+  # launched via the dashboard.
+  min_nodes: 4
   gpus_per_node: 1
-  vram_estimate_mb: 40960   # provisional; refined after phase c measures peak rss
+  vram_estimate_mb: 40960
 
 deploy:
   container: vllm-node

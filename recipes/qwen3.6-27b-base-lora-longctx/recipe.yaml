@@ -48,9 +48,11 @@ defaults:
   save_total_limit: 3
 
 hardware:
-  min_nodes: 2
+  # 4 nodes recommended for long-context (4-8k+) training — see attn-mlp
+  # sibling for rationale (better per-step time, more memory headroom).
+  min_nodes: 4
   gpus_per_node: 1
-  vram_estimate_mb: 40960   # provisional; refined after phase c measures peak rss
+  vram_estimate_mb: 40960
 
 deploy:
   container: vllm-node
