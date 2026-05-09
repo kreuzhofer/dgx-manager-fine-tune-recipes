@@ -34,7 +34,7 @@ pip install -q \
     hf_transfer \
     "liger-kernel>=0.5.0"
 echo "PEFT version: $(python -c 'import peft; print(peft.__version__)')"
-echo "Liger version: $(python -c 'import liger_kernel; print(liger_kernel.__version__)' 2>/dev/null || echo 'NOT INSTALLED')"
+echo "Liger import probe: $(python -c 'import liger_kernel; from liger_kernel.transformers import monkey_patch; print(\"ok (top-level + monkey_patch import)\")' 2>&1 | tail -1)"
 
 echo "=== Ready ==="
 
