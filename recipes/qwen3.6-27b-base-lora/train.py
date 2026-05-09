@@ -124,6 +124,12 @@ def main():
         callbacks=[LogMetricsCallback()],
         args=SFTConfig(
             output_dir=args.output_dir, per_device_train_batch_size=args.batch_size,
+            # HF defaults per_device_eval_batch_size to 8 — at seq=8192 with
+            # Qwen 3.6's 248k vocab, the eval forward materializes a
+            # [8, 8192, 248k] bf16 logits tensor (~32 GB) and ForCausalLMLoss
+            # casts to fp32 doubling it (~65 GB). On single-rank GB10 that
+            # OOMs after step 5. Pin to 1 to match training memory profile.
+            per_device_eval_batch_size=1,
             gradient_accumulation_steps=args.gradient_accumulation_steps,
             max_steps=args.max_steps, num_train_epochs=args.num_train_epochs,
             learning_rate=args.learning_rate, bf16=True, optim="adamw_torch",

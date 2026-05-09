@@ -124,6 +124,13 @@ def main():
         callbacks=[LogMetricsCallback()],
         args=SFTConfig(
             output_dir=args.output_dir, per_device_train_batch_size=args.batch_size,
+            # HF defaults per_device_eval_batch_size to 8 — at long context
+            # (which is the entire point of this variant) the eval forward
+            # materializes a [8, seq, 248k] bf16 logits tensor and then
+            # ForCausalLMLoss does logits.float() doubling it. On single-rank
+            # GB10 that OOMs after the first eval even when training fits.
+            # Pin to 1 to match training; eval memory == training memory.
+            per_device_eval_batch_size=1,
             gradient_accumulation_steps=args.gradient_accumulation_steps,
             max_steps=args.max_steps, num_train_epochs=args.num_train_epochs,
             learning_rate=args.learning_rate, bf16=True, optim="adamw_torch",
