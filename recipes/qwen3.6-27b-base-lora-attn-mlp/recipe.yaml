@@ -33,6 +33,14 @@ defaults:
   lora_r: 16
   lora_alpha: 16
   lora_dropout: 0.0
+  # Frequent checkpointing: a long-context build123d run on 2 nodes hard-
+  # locked the cluster between the final training step and adapter save
+  # (suspected: ZeRO-3 weight gather on save + already-resident eval
+  # activations exceeding the 122 GB unified memory ceiling). With
+  # save_steps=50 we always have a recent checkpoint to recover from
+  # even if end-of-training save crashes the system.
+  save_steps: 50
+  save_total_limit: 3
   # Attention projections + MLP gates. The dense 27B's MLP block is
   # SwiGLU-style with gate_proj/up_proj/down_proj on the full-attn
   # layers; targeting them ~triples LoRA capacity vs attention-only
