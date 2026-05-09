@@ -48,49 +48,100 @@ from trl import SFTTrainer, SFTConfig
 apply_all()
 
 
-def apply_liger_fused_linear_ce() -> bool:
-    """Patch the Qwen3-family CausalLM forward to fuse linear+CE.
+def apply_liger_class_level_patches() -> set:
+    """Apply every Liger Qwen3-family class-level patcher we know about.
 
-    Tries the most-specific patcher first and falls through. Only
-    fused_linear_cross_entropy is enabled — every other liger swap is
-    explicitly disabled to keep the GatedDeltaNet/attention path stock.
-    Returns True on a successful patch, False on miss/error (caller
-    proceeds with stock loss in that case)."""
+    IMPORTANT: liger's `apply_liger_kernel_to_<arch>` functions monkey-patch
+    `transformers.models.<arch>.*` classes. They silently no-op when their
+    target arch module isn't loaded, so a patcher returning without raising
+    does NOT mean the loaded model's class was actually touched. We run all
+    candidates that exist (no early-exit) and rely on `verify_and_force_patch`
+    after model load to confirm and, if necessary, attach lce_forward
+    directly to the loaded class.
+
+    Only `fused_linear_cross_entropy` is enabled — every other liger swap is
+    explicitly disabled to keep Qwen 3.6's hybrid GatedDeltaNet+attention
+    path stock."""
     try:
         from liger_kernel.transformers import monkey_patch as lk
     except ImportError as e:
         print(f"[Liger] liger-kernel import failed ({e}); using stock loss", flush=True)
-        return False
+        return set()
     candidates = (
-        "apply_liger_kernel_to_qwen3_next",  # if Qwen 3.6 lands here
-        "apply_liger_kernel_to_qwen3",
-        "apply_liger_kernel_to_qwen2",       # last-resort: shares CE shape with qwen3
+        "apply_liger_kernel_to_qwen3_5",     # Qwen 3.5 / 3.6 if shipped
+        "apply_liger_kernel_to_qwen3_next",  # next-gen Qwen3 family
+        "apply_liger_kernel_to_qwen3",       # Qwen 3.x dense
+        "apply_liger_kernel_to_qwen2",       # last-resort: shares CE shape
     )
     kwargs = dict(rope=False, swiglu=False, cross_entropy=False,
                   fused_linear_cross_entropy=True, rms_norm=False)
+    applied = set()
     for name in candidates:
         fn = getattr(lk, name, None)
         if fn is None:
             continue
         try:
             fn(**kwargs)
-            print(f"[Liger] {name}(fused_linear_cross_entropy=True) applied", flush=True)
-            return True
-        except TypeError as e:
-            # Older versions may not accept all kwargs — try with only the FLCE flag.
+            applied.add(name)
+        except TypeError:
             try:
                 fn(fused_linear_cross_entropy=True)
-                print(f"[Liger] {name}(fused_linear_cross_entropy=True) applied (minimal kwargs)", flush=True)
-                return True
-            except Exception as e2:
-                print(f"[Liger] {name} rejected kwargs: {e} / {e2}", flush=True)
+                applied.add(name + "(min-kwargs)")
+            except Exception as e:
+                print(f"[Liger] {name} rejected kwargs: {e}", flush=True)
         except Exception as e:
             print(f"[Liger] {name} failed: {e}", flush=True)
-    print("[Liger] No Qwen3-family patcher matched — stock loss path", flush=True)
-    return False
+    print(f"[Liger] class-level patchers ran: {sorted(applied) or 'none'}", flush=True)
+    return applied
 
 
-_liger_applied = apply_liger_fused_linear_ce()
+def verify_and_force_patch(model) -> str:
+    """Check whether the loaded model's forward is a Liger lce_forward.
+    If the class-level patchers missed (e.g. they patched qwen3_next while
+    the loaded model is qwen3_5), import lce_forward from the most-specific
+    arch-matching liger module and assign it to the loaded class directly.
+
+    Returns one of:
+      'class-level-hit'    — class-level patcher already replaced forward
+      'manual-patched'     — we attached lce_forward to the loaded class
+      'no-lce-source'      — no liger arch module exposed lce_forward
+      'no-liger'           — liger-kernel not importable"""
+    cls = type(model)
+    fwd_module = (getattr(cls.forward, "__module__", "") or "").lower()
+    if "liger" in fwd_module:
+        return "class-level-hit"
+    try:
+        from importlib import import_module
+    except ImportError:
+        return "no-liger"
+    # Try most-specific lce_forward source first. Liger's per-arch lce_forward
+    # functions all share the canonical HF CausalLM forward signature, so
+    # mounting qwen3.lce_forward on Qwen3_5ForCausalLM works as long as the
+    # model exposes the standard `self.model` body + `self.lm_head` head
+    # (verified true for Qwen3.x family).
+    sources = (
+        "liger_kernel.transformers.model.qwen3_5",
+        "liger_kernel.transformers.model.qwen3_next",
+        "liger_kernel.transformers.model.qwen3",
+        "liger_kernel.transformers.model.qwen2",
+    )
+    for src in sources:
+        try:
+            mod = import_module(src)
+        except ImportError:
+            continue
+        lce_fn = getattr(mod, "lce_forward", None)
+        if lce_fn is None:
+            continue
+        cls.forward = lce_fn
+        new_module = (getattr(cls.forward, "__module__", "") or "").lower()
+        if "liger" in new_module:
+            print(f"[Liger] Manually attached {src}.lce_forward to {cls.__name__}", flush=True)
+            return "manual-patched"
+    return "no-lce-source"
+
+
+_liger_class_patches = apply_liger_class_level_patches()
 
 # Increase NCCL timeout BEFORE any process group init.
 # ZeRO-3 loading does hundreds of broadcasts during from_pretrained;
@@ -129,15 +180,23 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name, dtype=torch.bfloat16, trust_remote_code=True)
     print(f"[Rank {world_rank}] Model loaded.", flush=True)
+
+    # Verify the Liger class-level patch actually hit the loaded class. The
+    # class-level patchers target transformers.models.<arch>.* by import
+    # path; if the loaded model is a different arch (e.g. qwen3_next patcher
+    # ran but model is qwen3_5), they no-op silently. verify_and_force_patch
+    # checks for liger in the forward's module path and, if missing, attaches
+    # lce_forward directly to the loaded class. Run on every rank because
+    # forward replacement is a class attribute change that all ranks need.
+    klass = type(model).__name__
+    module = type(model).__module__
+    patch_status = verify_and_force_patch(model)
     if world_rank == 0:
-        # Visibility for whether the Liger class-level patch actually hit
-        # the loaded model. With trust_remote_code=True the model class can
-        # come from the hub snapshot rather than transformers.models.qwen3,
-        # in which case the patcher's class-level monkey patch is a no-op.
-        klass = type(model).__name__
-        module = type(model).__module__
-        print(f"[Liger] Loaded model class: {module}.{klass} "
-              f"(liger_patch_applied={_liger_applied})", flush=True)
+        print(f"[Liger] Loaded model class: {module}.{klass}", flush=True)
+        print(f"[Liger] Class-level patchers ran: {sorted(_liger_class_patches) or 'none'}", flush=True)
+        print(f"[Liger] Final patch status: {patch_status} "
+              f"(forward.__module__={getattr(type(model).forward, '__module__', '?')})", flush=True)
+
     gc.collect()
     flush_page_cache()
 
