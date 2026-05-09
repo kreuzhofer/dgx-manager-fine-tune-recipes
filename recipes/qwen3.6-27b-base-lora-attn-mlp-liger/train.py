@@ -143,6 +143,33 @@ def verify_and_force_patch(model) -> str:
 
 _liger_class_patches = apply_liger_class_level_patches()
 
+
+class LigerSFTTrainer(SFTTrainer):
+    """SFTTrainer compatible with Liger fused linear cross-entropy.
+
+    Stock SFTTrainer.compute_loss does its own logits-shift + CE on
+    `outputs.logits`, which crashes with `'NoneType' object is not
+    subscriptable` because liger's lce_forward correctly returns
+    logits=None when labels are provided (the whole point of FLCE is
+    to skip materializing the [batch, seq, vocab] logits tensor).
+
+    Override: when the model already returned a loss (liger active),
+    use it directly. Otherwise fall back to stock behavior. Loss
+    semantics are equivalent: liger's internal shift-by-one + CE with
+    ignore_index=-100 produces the same value as SFTTrainer's manual
+    shift on materialized logits, since the data collator masks prompt
+    tokens with -100 either way."""
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        if num_items_in_batch is not None and getattr(self, "model_accepts_loss_kwargs", False):
+            inputs = {**inputs, "num_items_in_batch": num_items_in_batch}
+        outputs = model(**inputs)
+        loss = getattr(outputs, "loss", None)
+        if loss is None:
+            return super().compute_loss(model, inputs, return_outputs=return_outputs,
+                                        num_items_in_batch=num_items_in_batch)
+        return (loss, outputs) if return_outputs else loss
+
 # Increase NCCL timeout BEFORE any process group init.
 # ZeRO-3 loading does hundreds of broadcasts during from_pretrained;
 # the default 30-min timeout is too short for 27B on DGX Spark.
@@ -242,7 +269,7 @@ def main():
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     fix_gemma4_use_cache(model)  # Generic use_cache=True; safe no-op for non-Gemma archs.
 
-    trainer = SFTTrainer(
+    trainer = LigerSFTTrainer(
         model=model, processing_class=tokenizer,
         data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
         train_dataset=train_ds, eval_dataset=eval_ds,
