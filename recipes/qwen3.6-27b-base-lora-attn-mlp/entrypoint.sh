@@ -31,8 +31,10 @@ pip install -q \
     "trl>=0.16.0" \
     accelerate \
     deepspeed \
-    hf_transfer
+    hf_transfer \
+    "liger-kernel>=0.5.0"
 echo "PEFT version: $(python -c 'import peft; print(peft.__version__)')"
+echo "Liger import probe: $(python -c 'import liger_kernel; from liger_kernel.transformers import monkey_patch; print(\"ok (top-level + monkey_patch import)\")' 2>&1 | tail -1)"
 
 echo "=== Ready ==="
 

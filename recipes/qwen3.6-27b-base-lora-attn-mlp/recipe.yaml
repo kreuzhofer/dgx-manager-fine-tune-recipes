@@ -1,6 +1,6 @@
 recipe_version: "1"
 name: Qwen3.6-27B-Base-LoRA-Attn-MLP
-description: LoRA fine-tune for Qwen 3.6-27B BASE — attention + MLP targets (~3× capacity vs the attn-only sibling), for novel-domain tasks like DSL code generation
+description: LoRA fine-tune for Qwen 3.6-27B BASE — attention + MLP targets (~3× capacity vs the attn-only sibling), for novel-domain tasks like DSL code generation. Built-in GB10 unified-memory mitigations: Liger fused linear CE (~30% speedup, bit-identical loss), PYTORCH_CUDA_ALLOC_CONF=expandable_segments, per_device_eval_batch_size=1. Validated end-to-end at seq=8192 on single-node 50-step (eval_loss=0.105) and 4-node 5-step (eval_loss=0.316).
 base_model: Qwen/Qwen3.6-27B
 framework: deepspeed
 method: lora

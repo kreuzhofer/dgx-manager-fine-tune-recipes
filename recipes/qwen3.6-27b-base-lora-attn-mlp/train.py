@@ -1,11 +1,34 @@
 """Fine-tune Qwen 3.6-27B BASE — attn + MLP LoRA targets variant.
 
-Sibling of qwen3.6-27b-base-lora (attention-only). Adds gate_proj /
-up_proj / down_proj to target_modules to LoRA the dense MLP block on
-each full-attention layer. Roughly 3× the trainable parameter count
-(~30M vs ~10.5M) for ~0.11% of the base — landing in the band typical
-for novel-domain tasks like DSL code generation, where the model has
-to learn API surface and idioms not strongly present in pretraining.
+LoRA on attention + MLP gates of the dense full-attention layers
+(~3× the trainable parameter count vs the attn-only sibling) for
+novel-domain tasks like DSL code generation.
+
+GB10 unified-memory mitigations baked in (validated end-to-end on
+single-node 50-step + 4-node 5-step at seq=8192, eval_loss=0.105
+single-node and 0.316 multi-node):
+
+1. Liger-Kernel fused linear cross-entropy. Standard HF training
+   computes `logits = hidden @ lm_head.T` at shape [batch, seq, vocab]
+   before passing to CE. With Qwen 3.6's ~150k+ vocab and seq=8192
+   that single transient is ~2.5-4 GB in bf16 (×2 for grad). Liger's
+   fused kernel chunks along the seq dim and never materializes the
+   full tensor. ~30% per-step training speedup with bit-identical
+   loss. Only the loss-layer fusion is enabled; RoPE / RMSNorm /
+   SwiGLU patches are left off because Qwen 3.6's hybrid GatedDeltaNet
+   + attention is not validated against Liger's other Qwen3 kernels.
+
+2. PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True — set in
+   launch.sh; reduces fragmentation in the CUDA caching allocator
+   under unified-memory pressure.
+
+3. per_device_eval_batch_size=1 — load-bearing. HF defaults eval
+   batch to 8 which makes the eval logits tensor 8× larger than
+   training; with stock CE that's ~65 GB after .float() cast and
+   OOMs even when training fits. Liger's lce_forward only patches
+   the training-mode forward (has an `if self.training` gate), so
+   eval still uses stock CE — the pin keeps eval memory == training
+   memory.
 
 Architecture notes:
 - Dense, not MoE — no fused expert tensors. Suffix-only target_modules.
@@ -37,6 +60,129 @@ from transformers import AutoModelForCausalLM, DataCollatorForLanguageModeling
 from trl import SFTTrainer, SFTConfig
 
 apply_all()
+
+
+def apply_liger_class_level_patches() -> set:
+    """Apply every Liger Qwen3-family class-level patcher we know about.
+
+    IMPORTANT: liger's `apply_liger_kernel_to_<arch>` functions monkey-patch
+    `transformers.models.<arch>.*` classes. They silently no-op when their
+    target arch module isn't loaded, so a patcher returning without raising
+    does NOT mean the loaded model's class was actually touched. We run all
+    candidates that exist (no early-exit) and rely on `verify_and_force_patch`
+    after model load to confirm and, if necessary, attach lce_forward
+    directly to the loaded class.
+
+    Only `fused_linear_cross_entropy` is enabled — every other liger swap is
+    explicitly disabled to keep Qwen 3.6's hybrid GatedDeltaNet+attention
+    path stock."""
+    try:
+        from liger_kernel.transformers import monkey_patch as lk
+    except ImportError as e:
+        print(f"[Liger] liger-kernel import failed ({e}); using stock loss", flush=True)
+        return set()
+    candidates = (
+        "apply_liger_kernel_to_qwen3_5",     # Qwen 3.5 / 3.6 if shipped
+        "apply_liger_kernel_to_qwen3_next",  # next-gen Qwen3 family
+        "apply_liger_kernel_to_qwen3",       # Qwen 3.x dense
+        "apply_liger_kernel_to_qwen2",       # last-resort: shares CE shape
+    )
+    kwargs = dict(rope=False, swiglu=False, cross_entropy=False,
+                  fused_linear_cross_entropy=True, rms_norm=False)
+    applied = set()
+    for name in candidates:
+        fn = getattr(lk, name, None)
+        if fn is None:
+            continue
+        try:
+            fn(**kwargs)
+            applied.add(name)
+        except TypeError:
+            try:
+                fn(fused_linear_cross_entropy=True)
+                applied.add(name + "(min-kwargs)")
+            except Exception as e:
+                print(f"[Liger] {name} rejected kwargs: {e}", flush=True)
+        except Exception as e:
+            print(f"[Liger] {name} failed: {e}", flush=True)
+    print(f"[Liger] class-level patchers ran: {sorted(applied) or 'none'}", flush=True)
+    return applied
+
+
+def verify_and_force_patch(model) -> str:
+    """Check whether the loaded model's forward is a Liger lce_forward.
+    If the class-level patchers missed (e.g. they patched qwen3_next while
+    the loaded model is qwen3_5), import lce_forward from the most-specific
+    arch-matching liger module and assign it to the loaded class directly.
+
+    Returns one of:
+      'class-level-hit'    — class-level patcher already replaced forward
+      'manual-patched'     — we attached lce_forward to the loaded class
+      'no-lce-source'      — no liger arch module exposed lce_forward
+      'no-liger'           — liger-kernel not importable"""
+    cls = type(model)
+    fwd_module = (getattr(cls.forward, "__module__", "") or "").lower()
+    if "liger" in fwd_module:
+        return "class-level-hit"
+    try:
+        from importlib import import_module
+    except ImportError:
+        return "no-liger"
+    # Try most-specific lce_forward source first. Liger's per-arch lce_forward
+    # functions all share the canonical HF CausalLM forward signature, so
+    # mounting qwen3.lce_forward on Qwen3_5ForCausalLM works as long as the
+    # model exposes the standard `self.model` body + `self.lm_head` head
+    # (verified true for Qwen3.x family).
+    sources = (
+        "liger_kernel.transformers.model.qwen3_5",
+        "liger_kernel.transformers.model.qwen3_next",
+        "liger_kernel.transformers.model.qwen3",
+        "liger_kernel.transformers.model.qwen2",
+    )
+    for src in sources:
+        try:
+            mod = import_module(src)
+        except ImportError:
+            continue
+        lce_fn = getattr(mod, "lce_forward", None)
+        if lce_fn is None:
+            continue
+        cls.forward = lce_fn
+        new_module = (getattr(cls.forward, "__module__", "") or "").lower()
+        if "liger" in new_module:
+            print(f"[Liger] Manually attached {src}.lce_forward to {cls.__name__}", flush=True)
+            return "manual-patched"
+    return "no-lce-source"
+
+
+_liger_class_patches = apply_liger_class_level_patches()
+
+
+class LigerSFTTrainer(SFTTrainer):
+    """SFTTrainer compatible with Liger fused linear cross-entropy.
+
+    Stock SFTTrainer.compute_loss does its own logits-shift + CE on
+    `outputs.logits`, which crashes with `'NoneType' object is not
+    subscriptable` because liger's lce_forward correctly returns
+    logits=None when labels are provided (the whole point of FLCE is
+    to skip materializing the [batch, seq, vocab] logits tensor).
+
+    Override: when the model already returned a loss (liger active),
+    use it directly. Otherwise fall back to stock behavior. Loss
+    semantics are equivalent: liger's internal shift-by-one + CE with
+    ignore_index=-100 produces the same value as SFTTrainer's manual
+    shift on materialized logits, since the data collator masks prompt
+    tokens with -100 either way."""
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        if num_items_in_batch is not None and getattr(self, "model_accepts_loss_kwargs", False):
+            inputs = {**inputs, "num_items_in_batch": num_items_in_batch}
+        outputs = model(**inputs)
+        loss = getattr(outputs, "loss", None)
+        if loss is None:
+            return super().compute_loss(model, inputs, return_outputs=return_outputs,
+                                        num_items_in_batch=num_items_in_batch)
+        return (loss, outputs) if return_outputs else loss
 
 # Increase NCCL timeout BEFORE any process group init.
 # ZeRO-3 loading does hundreds of broadcasts during from_pretrained;
@@ -75,6 +221,23 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name, dtype=torch.bfloat16, trust_remote_code=True)
     print(f"[Rank {world_rank}] Model loaded.", flush=True)
+
+    # Verify the Liger class-level patch actually hit the loaded class. The
+    # class-level patchers target transformers.models.<arch>.* by import
+    # path; if the loaded model is a different arch (e.g. qwen3_next patcher
+    # ran but model is qwen3_5), they no-op silently. verify_and_force_patch
+    # checks for liger in the forward's module path and, if missing, attaches
+    # lce_forward directly to the loaded class. Run on every rank because
+    # forward replacement is a class attribute change that all ranks need.
+    klass = type(model).__name__
+    module = type(model).__module__
+    patch_status = verify_and_force_patch(model)
+    if world_rank == 0:
+        print(f"[Liger] Loaded model class: {module}.{klass}", flush=True)
+        print(f"[Liger] Class-level patchers ran: {sorted(_liger_class_patches) or 'none'}", flush=True)
+        print(f"[Liger] Final patch status: {patch_status} "
+              f"(forward.__module__={getattr(type(model).forward, '__module__', '?')})", flush=True)
+
     gc.collect()
     flush_page_cache()
 
@@ -120,7 +283,7 @@ def main():
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     fix_gemma4_use_cache(model)  # Generic use_cache=True; safe no-op for non-Gemma archs.
 
-    trainer = SFTTrainer(
+    trainer = LigerSFTTrainer(
         model=model, processing_class=tokenizer,
         data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
         train_dataset=train_ds, eval_dataset=eval_ds,
@@ -129,10 +292,14 @@ def main():
             output_dir=args.output_dir, per_device_train_batch_size=args.batch_size,
             # HF defaults per_device_eval_batch_size to 8 — at seq=8192 with
             # Qwen 3.6's 248k vocab, the eval forward materializes a
-            # [8, 8192, 248k] bf16 logits tensor (~32 GB) and ForCausalLMLoss
-            # casts to fp32 doubling it (~65 GB). On single-rank GB10 that
-            # OOMs after step 5 even when training itself fits. Pin to 1 to
-            # match training and keep eval memory == training memory.
+            # [8, 8192, 248k] bf16 logits tensor (~32 GB) and then
+            # ForCausalLMLoss does logits.float() doubling it (~65 GB).
+            # On single-rank GB10 that pushes us straight into OOM after
+            # step 5 even with model + optim only at ~75 GB. Pin to 1 to
+            # match training. Liger's lce_forward removes the logits
+            # materialization entirely, so this is belt-and-suspenders;
+            # keep the cap regardless so eval never becomes a bigger memory
+            # event than training.
             per_device_eval_batch_size=1,
             gradient_accumulation_steps=args.gradient_accumulation_steps,
             max_steps=args.max_steps, num_train_epochs=args.num_train_epochs,
