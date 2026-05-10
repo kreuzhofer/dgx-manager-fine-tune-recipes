@@ -1,6 +1,6 @@
 recipe_version: "1"
 name: Qwen3.6-27B-Base-LoRA-LongCtx
-description: LoRA fine-tune for Qwen 3.6-27B BASE — attention-only target, long-context safety (save_steps=50, no full-weight gather on save). Use for 4k-8k+ token training where end-of-training save+eval can OOM the 122 GB unified memory.
+description: LoRA fine-tune for Qwen 3.6-27B BASE — attention-only target, long-context-safe defaults (save_steps=50, no full-weight gather on save) plus the full GB10 unified-memory mitigation stack: Liger fused linear CE (~30% speedup, bit-identical loss), PYTORCH_CUDA_ALLOC_CONF=expandable_segments, per_device_eval_batch_size=1. Use for 4k-8k+ token training where the eval-batch logits tensor or end-of-training save would otherwise OOM the 122 GB unified memory.
 base_model: Qwen/Qwen3.6-27B
 framework: deepspeed
 method: lora

@@ -87,6 +87,13 @@ sync && echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export NCCL_ASYNC_ERROR_HANDLING=1
 
+# Reduce CUDA caching-allocator fragmentation under GB10's unified-memory
+# pressure. expandable_segments lets the allocator grow contiguous regions
+# instead of leaving fragmented holes between freed blocks — measurable
+# headroom recovery on long-context training where activation buffers
+# allocate and free at varying sizes each step.
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+
 # DGX Spark networking: each 200 GbE QSFP port surfaces as TWO 100G
 # MACs on different PCIe Gen5 x4 lanes (PCI domains 0000 and 0002).
 # To get the full ~25 GB/s wire bandwidth NCCL must use BOTH MACs as

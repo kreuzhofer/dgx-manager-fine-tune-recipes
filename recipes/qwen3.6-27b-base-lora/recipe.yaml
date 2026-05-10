@@ -1,6 +1,6 @@
 recipe_version: "1"
 name: Qwen3.6-27B-Base-LoRA
-description: LoRA fine-tune for Qwen 3.6-27B BASE (dense, hybrid GatedDeltaNet+Gated-Attention, multimodal) on DGX Spark
+description: LoRA fine-tune for Qwen 3.6-27B BASE (dense, hybrid GatedDeltaNet+Gated-Attention, multimodal) on DGX Spark. Attention-only LoRA targets. Built-in GB10 unified-memory mitigations: Liger fused linear CE (~30% speedup, bit-identical loss), PYTORCH_CUDA_ALLOC_CONF=expandable_segments, per_device_eval_batch_size=1.
 base_model: Qwen/Qwen3.6-27B
 framework: deepspeed
 method: lora

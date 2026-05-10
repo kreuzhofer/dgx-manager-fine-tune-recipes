@@ -1,5 +1,29 @@
 """Fine-tune Qwen 3.6-27B BASE (dense, hybrid GatedDeltaNet + Gated-Attention,
-multimodal) with DeepSpeed ZeRO-3 + LoRA.
+multimodal) with DeepSpeed ZeRO-3 + LoRA. Long-context variant.
+
+GB10 unified-memory mitigations (shared with the attn-mlp sibling,
+validated end-to-end at seq=8192 — extra-load-bearing here because
+this variant is specifically designed for longer context where the
+loss-layer logits tensor and eval-batch blowup dominate memory):
+
+1. Liger-Kernel fused linear cross-entropy. Skips materializing the
+   [batch, seq, vocab] logits tensor at the loss layer — at Qwen
+   3.6's 248k vocab + long context that's a multi-GB transient.
+   ~30% per-step training speedup with bit-identical loss. Only
+   the loss-layer fusion is enabled; RoPE / RMSNorm / SwiGLU patches
+   are left off because Qwen 3.6's hybrid GatedDeltaNet+attention
+   is not validated against Liger's other Qwen3 kernels.
+
+2. PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True in launch.sh —
+   reduces fragmentation in the CUDA caching allocator under
+   unified-memory pressure.
+
+3. per_device_eval_batch_size=1 — load-bearing. HF defaults eval
+   batch to 8 which makes the eval logits tensor 8× larger than
+   training; with stock CE that's catastrophic at long context.
+   Liger's lce_forward only patches the training-mode forward, so
+   eval still uses stock CE — the pin keeps eval memory == training
+   memory.
 
 Architecture notes (vs the 35B-A3B recipe this was adapted from):
 - Dense, not MoE — no fused expert tensors. Drop `target_parameters`;
@@ -39,6 +63,113 @@ from trl import SFTTrainer, SFTConfig
 
 apply_all()
 
+
+def apply_liger_class_level_patches() -> set:
+    """Apply every Liger Qwen3-family class-level patcher we know about.
+
+    IMPORTANT: liger's `apply_liger_kernel_to_<arch>` functions monkey-patch
+    `transformers.models.<arch>.*` classes. They silently no-op when their
+    target arch module isn't loaded, so a patcher returning without raising
+    does NOT mean the loaded model's class was actually touched. We run all
+    candidates that exist (no early-exit) and rely on `verify_and_force_patch`
+    after model load to confirm and, if necessary, attach lce_forward
+    directly to the loaded class.
+
+    Only `fused_linear_cross_entropy` is enabled — every other liger swap is
+    explicitly disabled to keep Qwen 3.6's hybrid GatedDeltaNet+attention
+    path stock."""
+    try:
+        from liger_kernel.transformers import monkey_patch as lk
+    except ImportError as e:
+        print(f"[Liger] liger-kernel import failed ({e}); using stock loss", flush=True)
+        return set()
+    candidates = (
+        "apply_liger_kernel_to_qwen3_5",
+        "apply_liger_kernel_to_qwen3_next",
+        "apply_liger_kernel_to_qwen3",
+        "apply_liger_kernel_to_qwen2",
+    )
+    kwargs = dict(rope=False, swiglu=False, cross_entropy=False,
+                  fused_linear_cross_entropy=True, rms_norm=False)
+    applied = set()
+    for name in candidates:
+        fn = getattr(lk, name, None)
+        if fn is None:
+            continue
+        try:
+            fn(**kwargs)
+            applied.add(name)
+        except TypeError:
+            try:
+                fn(fused_linear_cross_entropy=True)
+                applied.add(name + "(min-kwargs)")
+            except Exception as e:
+                print(f"[Liger] {name} rejected kwargs: {e}", flush=True)
+        except Exception as e:
+            print(f"[Liger] {name} failed: {e}", flush=True)
+    print(f"[Liger] class-level patchers ran: {sorted(applied) or 'none'}", flush=True)
+    return applied
+
+
+def verify_and_force_patch(model) -> str:
+    """Check whether the loaded model's forward is a Liger lce_forward.
+    If the class-level patchers missed (e.g. they patched qwen3_next while
+    the loaded model is qwen3_5), import lce_forward from the most-specific
+    arch-matching liger module and assign it to the loaded class directly."""
+    cls = type(model)
+    fwd_module = (getattr(cls.forward, "__module__", "") or "").lower()
+    if "liger" in fwd_module:
+        return "class-level-hit"
+    try:
+        from importlib import import_module
+    except ImportError:
+        return "no-liger"
+    sources = (
+        "liger_kernel.transformers.model.qwen3_5",
+        "liger_kernel.transformers.model.qwen3_next",
+        "liger_kernel.transformers.model.qwen3",
+        "liger_kernel.transformers.model.qwen2",
+    )
+    for src in sources:
+        try:
+            mod = import_module(src)
+        except ImportError:
+            continue
+        lce_fn = getattr(mod, "lce_forward", None)
+        if lce_fn is None:
+            continue
+        cls.forward = lce_fn
+        new_module = (getattr(cls.forward, "__module__", "") or "").lower()
+        if "liger" in new_module:
+            print(f"[Liger] Manually attached {src}.lce_forward to {cls.__name__}", flush=True)
+            return "manual-patched"
+    return "no-lce-source"
+
+
+_liger_class_patches = apply_liger_class_level_patches()
+
+
+class LigerSFTTrainer(SFTTrainer):
+    """SFTTrainer compatible with Liger fused linear cross-entropy.
+
+    Stock SFTTrainer.compute_loss does its own logits-shift + CE on
+    `outputs.logits`, which crashes with `'NoneType' object is not
+    subscriptable` because liger's lce_forward correctly returns
+    logits=None when labels are provided. Override: when the model
+    already returned a loss (liger active), use it directly.
+    Otherwise fall back to stock behavior."""
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        if num_items_in_batch is not None and getattr(self, "model_accepts_loss_kwargs", False):
+            inputs = {**inputs, "num_items_in_batch": num_items_in_batch}
+        outputs = model(**inputs)
+        loss = getattr(outputs, "loss", None)
+        if loss is None:
+            return super().compute_loss(model, inputs, return_outputs=return_outputs,
+                                        num_items_in_batch=num_items_in_batch)
+        return (loss, outputs) if return_outputs else loss
+
+
 # Increase NCCL timeout BEFORE any process group init.
 # ZeRO-3 loading does hundreds of broadcasts during from_pretrained;
 # the default 30-min timeout is too short for 27B on DGX Spark.
@@ -76,6 +207,19 @@ def main():
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name, dtype=torch.bfloat16, trust_remote_code=True)
     print(f"[Rank {world_rank}] Model loaded.", flush=True)
+
+    # Verify the Liger class-level patch actually hit the loaded class. Run on
+    # every rank because forward replacement is a class attribute change that
+    # all ranks need.
+    klass = type(model).__name__
+    module = type(model).__module__
+    patch_status = verify_and_force_patch(model)
+    if world_rank == 0:
+        print(f"[Liger] Loaded model class: {module}.{klass}", flush=True)
+        print(f"[Liger] Class-level patchers ran: {sorted(_liger_class_patches) or 'none'}", flush=True)
+        print(f"[Liger] Final patch status: {patch_status} "
+              f"(forward.__module__={getattr(type(model).forward, '__module__', '?')})", flush=True)
+
     gc.collect()
     flush_page_cache()
 
@@ -117,7 +261,7 @@ def main():
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     fix_gemma4_use_cache(model)  # Generic use_cache=True; safe no-op for non-Gemma archs.
 
-    trainer = SFTTrainer(
+    trainer = LigerSFTTrainer(
         model=model, processing_class=tokenizer,
         data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
         train_dataset=train_ds, eval_dataset=eval_ds,
