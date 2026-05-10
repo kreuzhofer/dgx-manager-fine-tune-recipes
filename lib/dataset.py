@@ -113,17 +113,68 @@ def load_training_dataset(path_or_id, split="train"):
     return load_dataset(path_or_id, split=split)
 
 
+def _normalize_openai_messages_for_qwen(messages):
+    """Parse `tool_call.function.arguments` from JSON-string to dict.
+
+    OpenAI spec stores `arguments` as a JSON STRING (so the model can
+    emit malformed JSON as an error case). Qwen 3.x chat templates
+    iterate `tool_call.arguments|items` after reassigning
+    `tool_call = tool_call.function`, which requires `arguments` to be
+    a mapping, not a string. Without this fix the template raises:
+        TypeError: Can only get item pairs from a mapping.
+
+    The fix preserves the OpenAI nested shape (Qwen's template handles
+    `tool_call.function is defined`) and only changes the string→dict
+    representation of arguments. Returns a new list — does not mutate
+    the input."""
+    out = []
+    for m in messages:
+        if not isinstance(m, dict):
+            out.append(m)
+            continue
+        tool_calls = m.get("tool_calls")
+        if not tool_calls:
+            out.append(m)
+            continue
+        new_calls = []
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                new_calls.append(tc)
+                continue
+            fn = tc.get("function")
+            if isinstance(fn, dict) and isinstance(fn.get("arguments"), str):
+                args_str = fn["arguments"]
+                try:
+                    parsed = json.loads(args_str) if args_str.strip() else {}
+                except json.JSONDecodeError:
+                    parsed = {}
+                new_calls.append({**tc, "function": {**fn, "arguments": parsed}})
+                continue
+            # Flat shape (no .function), arguments may also be a string.
+            if "function" not in tc and isinstance(tc.get("arguments"), str):
+                args_str = tc["arguments"]
+                try:
+                    parsed = json.loads(args_str) if args_str.strip() else {}
+                except json.JSONDecodeError:
+                    parsed = {}
+                new_calls.append({**tc, "arguments": parsed})
+                continue
+            new_calls.append(tc)
+        out.append({**m, "tool_calls": new_calls})
+    return out
+
+
 def format_example(example, tokenizer, max_seq_length):
     """Format a single dataset example into tokenized chat for training."""
     messages = []
     tools = None
 
     if "messages" in example:
-        # OpenAI chat completion format. Pass through directly; let the
-        # tokenizer's chat template render. Carry `tools` for
-        # function-calling datasets — modern chat templates accept it
-        # as a kwarg and silently no-op when unused.
-        messages = example["messages"]
+        # OpenAI chat completion format. Normalize tool_call shape for
+        # Qwen-family templates (lift function.{name,arguments} to top
+        # level and parse the JSON-string arguments to a dict). For
+        # datasets without tool_calls this is a no-op pass-through.
+        messages = _normalize_openai_messages_for_qwen(example["messages"])
         tools = example.get("tools")
     elif "conversations" in example:
         role_map = {"system": "system", "human": "user", "gpt": "assistant"}
